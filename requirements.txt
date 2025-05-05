@@ -1,0 +1,5 @@
+pyspedas>=1.2.0
+numpy
+scipy
+pandas
+matplotlib
