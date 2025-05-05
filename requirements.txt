@@ -1,4 +1,4 @@
-pyspedas>=1.2.0
+pyspedas>=1.7.20
 numpy
 scipy
 pandas

@@ -1,13 +1,16 @@
-# mms_mp/coords.py
-# ------------------------------------------------------------
-# Local LMN coordinate utilities (expanded)
-# ------------------------------------------------------------
-# New features:
-#   • Eigenvalue–ratio uncertainty metrics
-#   • Shue et al. (1997) model‐normal fallback
-#   • “Hybrid” LMN (prefers MVA, falls back to model if λ ratios poor)
-#   • Optional LRU cache to avoid recomputing LMN for the same window
-# ------------------------------------------------------------
+"""
+coords.py
+=========
+
+Local-LMN coordinate helpers used throughout the MMS-MP toolkit.
+
+Key changes (May 2025)
+----------------------
+▶ Uses `pyspedas.lmn_matrix_make` (v1.7.20+) when eigenvalue ratios are poor  
+▶ Retains Shue-model fallback if PySPEDAS < 1.7.20 or import fails  
+▶ Tidier dataclass with `meta` field that stores any LMN metadata
+"""
+
 from __future__ import annotations
 from dataclasses import dataclass
 from functools import lru_cache
@@ -16,154 +19,149 @@ from typing import Optional, Tuple
 import numpy as np
 import warnings
 
-# ------------------------------------------------------------------
-# Dataclass
-# ------------------------------------------------------------------
+# --------------------------------------------------------------------
+# Attempt to import the new LMN helper from PySPEDAS ≥ 1.7.20
+try:
+    from pyspedas import lmn_matrix_make   # type: ignore
+    _HAVE_PS_LMN = True
+except Exception:                          # pragma: no cover
+    _HAVE_PS_LMN = False
+
+# --------------------------------------------------------------------
+# Dataclass for LMN output
+# --------------------------------------------------------------------
 @dataclass
 class LMN:
-    """Container for LMN basis + diagnostics."""
-    L: np.ndarray            # (3,)
-    M: np.ndarray            # (3,)
-    N: np.ndarray            # (3,)
-    R: np.ndarray            # (3, 3)  rows = L, M, N
-    eigvals: Tuple[float, float, float]   # λ_max, λ_mid, λ_min
-    r_max_mid: float         # λ_max / λ_mid
-    r_mid_min: float         # λ_mid / λ_min
+    L: np.ndarray
+    M: np.ndarray
+    N: np.ndarray
+    R: np.ndarray                 # 3×3 rotation (rows = L, M, N)
+    eigvals: Tuple[float, float, float]
+    r_max_mid: float
+    r_mid_min: float
+    meta: Optional[dict] = None   # Optional metadata (pyspedas output)
 
-    # Convenience rotation --------------------------------------------------
+    # rotate vectors → LMN
     def to_lmn(self, vec_xyz: np.ndarray) -> np.ndarray:
-        """Rotate N×3 GSM/GSE vectors → LMN."""
         return (self.R @ vec_xyz.T).T
 
-# ------------------------------------------------------------------
-# Classical MVA (minimum variance on B)
-# ------------------------------------------------------------------
-def mva(b_xyz: np.ndarray,
-        eigen_sort: bool = True) -> LMN:
-    """
-    Perform MVA on a B-field slice (N×3, GSM) and return LMN dataclass.
-    """
-    if b_xyz.ndim != 2 or b_xyz.shape[1] != 3:
-        raise ValueError("b_xyz must be (N, 3) array")
+
+# --------------------------------------------------------------------
+# Classical minimum-variance analysis
+# --------------------------------------------------------------------
+def _mva(b_xyz: np.ndarray) -> LMN:
     db = b_xyz - b_xyz.mean(axis=0)
-    cov = db.T @ db / db.shape[0]  # covariance
+    cov = db.T @ db / db.shape[0]
     eigvals, eigvecs = np.linalg.eig(cov)
+    order = np.argsort(eigvals)[::-1]
+    eigvals = eigvals[order]
+    eigvecs = eigvecs[:, order]
 
-    if eigen_sort:
-        order = np.argsort(eigvals)[::-1]          # λ_max → λ_min
-        eigvals = eigvals[order]
-        eigvecs = eigvecs[:, order]
+    L, M, _ = eigvecs.T
+    L /= np.linalg.norm(L)
+    M = M - np.dot(M, L) * L
+    M /= np.linalg.norm(M)
+    N = np.cross(L, M); N /= np.linalg.norm(N)
+    R = np.vstack((L, M, N))
 
-    L_vec, M_vec, N_vec = eigvecs.T
-    # Orthonormalise for safety
-    L_vec /= np.linalg.norm(L_vec)
-    M_vec -= np.dot(M_vec, L_vec) * L_vec
-    M_vec /= np.linalg.norm(M_vec)
-    N_vec = np.cross(L_vec, M_vec)
-    N_vec /= np.linalg.norm(N_vec)
+    return LMN(L, M, N, R,
+               tuple(eigvals),
+               eigvals[0] / eigvals[1],
+               eigvals[1] / eigvals[2])
 
-    R = np.vstack((L_vec, M_vec, N_vec))
-    r_max_mid = eigvals[0] / eigvals[1]
-    r_mid_min = eigvals[1] / eigvals[2]
-
-    return LMN(L_vec, M_vec, N_vec, R,
-               tuple(eigvals), r_max_mid, r_mid_min)
-
-# ------------------------------------------------------------------
-# Shue et al. (1997) empirical magnetopause normal
-# ------------------------------------------------------------------
-def _shue_normal(pos_gsm: np.ndarray,
-                 sw_pressure_nPa: float = 2.0,
+# --------------------------------------------------------------------
+# Shue-model normal (fallback)
+# --------------------------------------------------------------------
+def _shue_normal(pos_gsm_km: np.ndarray,
+                 sw_pressure_npa: float = 2.0,
                  dipole_tilt_deg: float = 0.0) -> np.ndarray:
-    """
-    Compute outward magnetopause normal using Shue et al. 1997 model.
-    Only requires spacecraft position in GSM (km).
-    """
-    # Shue model r(θ) = r0 (2 / (1+cosθ))^α
-    # Normal is gradient; here approximate as vector from origin to model surface.
-    # r0 & α depend on solar-wind dynamic pressure (nPa) and dipole tilt.
-
-    # === parameters ===
-    r0 = 11.4 * sw_pressure_nPa**(-1/6.6)          # Earth radii
+    r0 = 11.4 * sw_pressure_npa ** (-1 / 6.6)
     alpha = 0.58 - 0.007 * dipole_tilt_deg
-
-    # Convert pos to RE and spherical
     RE = 6371.0
-    r_vec = pos_gsm / RE
-    x, y, z = r_vec
-    r = np.linalg.norm(r_vec)
-    if r == 0:  # origin—undefined
-        return np.array([1.0, 0.0, 0.0])
+    r_vec = pos_gsm_km / RE
+    r_mag = np.linalg.norm(r_vec)
+    if r_mag == 0:
+        return np.array([1., 0., 0.])
+    theta = np.arccos(r_vec[2] / r_mag)
+    _ = r0 * (2 / (1 + np.cos(theta))) ** alpha  # model distance (unused)
+    nhat = r_vec / r_mag
+    return nhat
 
-    theta = np.arccos(z / r)        # polar angle from +Z
-    r_model = r0 * (2 / (1 + np.cos(theta)))**alpha
-    # Normal is radial at surface; take outward unit vector from Earth centre
-    n = r_vec / np.linalg.norm(r_vec)
-    # Ensure n points outward (positive dot with pos)
-    if np.dot(n, r_vec) < 0:
-        n = -n
-    return n
-
-# ------------------------------------------------------------------
-# Hybrid LMN factory
-# ------------------------------------------------------------------
+# --------------------------------------------------------------------
+# Public: hybrid LMN
+# --------------------------------------------------------------------
 def hybrid_lmn(b_xyz: np.ndarray,
-               pos_gsm: Optional[np.ndarray] = None,
+               pos_gsm_km: Optional[np.ndarray] = None,
                eig_ratio_thresh: float = 5.0,
                cache_key: Optional[str] = None) -> LMN:
     """
-    Prefer MVA but fall back to Shue-model normal when eigenvalue ratios are poor.
-    pos_gsm – spacecraft position (km GSM), required for model fallback.
-    eig_ratio_thresh – require both λ_max/λ_mid and λ_mid/λ_min ≥ this.
-    cache_key – optional immutable key → caches LMN for repeated calls.
-    """
-    if cache_key is None:
-        return _compute_hybrid(b_xyz, pos_gsm, eig_ratio_thresh)
+    Create an LMN triad.
 
-    # tiny wrapper around lru_cache (cannot hash ndarray directly)
-    return _cached_hybrid(cache_key, b_xyz.tobytes(), tuple(b_xyz.shape),
-                          None if pos_gsm is None else tuple(pos_gsm),
-                          eig_ratio_thresh)
+    1. Do MVA → if both λ_max/λ_mid and λ_mid/λ_min ≥ `eig_ratio_thresh`,
+       keep it.
+    2. Else, try PySPEDAS `lmn_matrix_make` (if available).
+    3. Else, build triad using Shue (1997) outward normal.
+    """
+    if cache_key:
+        return _cached_hybrid(cache_key, b_xyz.tobytes(), b_xyz.shape,
+                              None if pos_gsm_km is None else pos_gsm_km.tobytes(),
+                              eig_ratio_thresh)
+
+    return _compute_hybrid(b_xyz, pos_gsm_km, eig_ratio_thresh)
+
 
 @lru_cache(maxsize=64)
 def _cached_hybrid(key: str,
                    b_bytes: bytes,
-                   b_shape: Tuple[int, int],
-                   pos_tuple: Optional[Tuple[float, float, float]],
-                   eig_ratio_thresh: float) -> LMN:
-    b_xyz = np.frombuffer(b_bytes).reshape(b_shape)
-    pos = None if pos_tuple is None else np.array(pos_tuple)
-    return _compute_hybrid(b_xyz, pos, eig_ratio_thresh)
+                   shape: Tuple[int, int],
+                   pos_bytes: Optional[bytes],
+                   thresh: float) -> LMN:
+    b = np.frombuffer(b_bytes).reshape(shape)
+    pos = None if pos_bytes is None else np.frombuffer(pos_bytes)
+    return _compute_hybrid(b, pos, thresh)
 
-# ------------------------------------------------------------------
-# Internal compute
-# ------------------------------------------------------------------
+
 def _compute_hybrid(b_xyz: np.ndarray,
-                    pos_gsm: Optional[np.ndarray],
-                    ratio_thresh: float) -> LMN:
-    lm = mva(b_xyz)
-    if lm.r_max_mid >= ratio_thresh and lm.r_mid_min >= ratio_thresh:
+                    pos_gsm_km: Optional[np.ndarray],
+                    thresh: float) -> LMN:
+    lm = _mva(b_xyz)
+    if lm.r_max_mid >= thresh and lm.r_mid_min >= thresh:
         return lm  # good MVA
 
-    # Weak eigen ratios → fall back or blend
-    if pos_gsm is None:
-        warnings.warn("Poor MVA eigenvalue ratios but no spacecraft position provided; "
-                      "returning MVA result anyway.")
+    # ----------------------------------------------------------------
+    # Weak eigenvalues → attempt PySPEDAS LMN (if present)
+    # ----------------------------------------------------------------
+    if _HAVE_PS_LMN and pos_gsm_km is not None:
+        try:
+            lmn_res = lmn_matrix_make(b_xyz, pos_gsm_km,
+                                      coord_system='GSM',
+                                      verbose=False)
+            R = np.vstack((lmn_res['lmn'][0],
+                           lmn_res['lmn'][1],
+                           lmn_res['lmn'][2]))
+            return LMN(R[0], R[1], R[2], R,
+                       lm.eigvals, lm.r_max_mid, lm.r_mid_min,
+                       meta=lmn_res)
+        except Exception as e:         # pragma: no cover
+            warnings.warn(f'pyspedas.lmn_matrix_make failed: {e}')
+
+    # ----------------------------------------------------------------
+    # Last resort → Shue outward normal + mean-B cross-product
+    # ----------------------------------------------------------------
+    if pos_gsm_km is None:
+        warnings.warn('Poor eigenvalue ratios and no spacecraft position; '
+                      'returning low-quality MVA triad.')
         return lm
 
-    n_model = _shue_normal(pos_gsm)
-    # Create orthonormal triad: project L along B × N_model
-    # Use mean B as guide for L direction (max variance often along B)
+    nhat = _shue_normal(pos_gsm_km)
     Bmean = b_xyz.mean(axis=0)
-    L_vec = np.cross(Bmean, n_model)
-    if np.linalg.norm(L_vec) < 1e-3:
-        # fallback to any orthogonal
-        L_vec = np.cross([0, 1, 0], n_model)
-    L_vec /= np.linalg.norm(L_vec)
-    M_vec = np.cross(n_model, L_vec); M_vec /= np.linalg.norm(M_vec)
-    N_vec = n_model / np.linalg.norm(n_model)
-    R = np.vstack((L_vec, M_vec, N_vec))
-    lm_model = LMN(L_vec, M_vec, N_vec, R, lm.eigvals, lm.r_max_mid, lm.r_mid_min)
-    warnings.warn("Using model-normal LMN due to poor eigenvalue ratios "
-                  f"(λ_max/λ_mid={lm.r_max_mid:.1f}, λ_mid/λ_min={lm.r_mid_min:.1f}).")
-    return lm_model
+    L = np.cross(Bmean, nhat)
+    if np.linalg.norm(L) < 1e-3:
+        L = np.cross([0, 1, 0], nhat)
+    L /= np.linalg.norm(L)
+    M = np.cross(nhat, L); M /= np.linalg.norm(M)
+    N = nhat
+    R = np.vstack((L, M, N))
+    warnings.warn('Using Shue-model normal due to poor MVA quality.')
+    return LMN(L, M, N, R,
+               lm.eigvals, lm.r_max_mid, lm.r_mid_min)

@@ -17,7 +17,7 @@ import numpy as np
 import pandas as pd
 
 from pyspedas.projects import mms
-from pyspedas.tplot import tplot_names
+from pytplot import tplot_names
 from pyspedas import get_data, tplot, store_data
 from pytplot import data_quants
 
