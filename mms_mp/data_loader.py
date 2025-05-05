@@ -122,13 +122,22 @@ def load_event(trange: List[str],
         event[p]['N_tot']   = _tp(f'{key}_dis_numberdensity_{data_rate_fpi}')
         event[p]['V_i_gse'] = _tp(f'{key}_dis_bulkv_gse_{data_rate_fpi}')
 
-        # electron moments – burst first, else fast (MMS4 post-2018)
-        des_postfix = data_rate_fpi
-        if (f'{key}_des_numberdensity_{data_rate_fpi}' not in tplot_names()
-                and p == '4'):
-            des_postfix = 'fast'   # fallback
-        event[p]['N_e']     = _tp(f'{key}_des_numberdensity_{des_postfix}')
-        event[p]['V_e_gse'] = _tp(f'{key}_des_bulkv_gse_{des_postfix}')
+        # ── DES electrons with multi-level fallback ──────────────────
+        _found = False
+        for des_postfix in [data_rate_fpi, 'fast', 'srvy']:
+            var_test = f'{key}_des_numberdensity_{des_postfix}'
+            if var_test in tplot_names():
+                event[p]['N_e']     = _tp(var_test)
+                event[p]['V_e_gse'] = _tp(f'{key}_des_bulkv_gse_{des_postfix}')
+                _found = True
+                break
+        if not _found:
+            # create NaN stubs so downstream code can continue gracefully
+            print(f'[WARN] DES moments absent for MMS{p} – electrons skipped')
+            t_stub = event[p]['N_tot'][0]        # use ion-density clock
+            nan_vec = np.full_like(event[p]['V_i_gse'][1], np.nan)
+            event[p]['N_e']     = (t_stub, np.full_like(event[p]['N_tot'][1], np.nan))
+            event[p]['V_e_gse'] = (t_stub, nan_vec)
 
         # HPCA cold ions
         event[p]['N_he']    = _tp(f'{key}_hpca_heplus_number_density')
