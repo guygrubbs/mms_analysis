@@ -82,14 +82,14 @@ def main() -> None:
         # Build LMN (B burst vs. POS 1-min → interpolate)
         mid_B = len(d['B_gsm'][0]) // 2
         t_mid = d['B_gsm'][0][mid_B]
-        B_seg = d['B_gsm'][1][mid_B-64:mid_B+64]
+        B_seg = d['B_gsm'][1][mid_B-64:mid_B+64, :3]
         interp_pos = interp1d(d['POS_gsm'][0], d['POS_gsm'][1],
                               axis=0, bounds_error=False,
                               fill_value='extrapolate')
         pos_mid = interp_pos(t_mid)
         lm = coords.hybrid_lmn(B_seg, pos_gsm_km=pos_mid)
 
-        B_lmn = lm.to_lmn(d['B_gsm'][1])
+        B_lmn = lm.to_lmn(d['B_gsm'][1][:, :3])
         BN = B_lmn[:, 2]
 
         # 2.3 ─ Boundary detection

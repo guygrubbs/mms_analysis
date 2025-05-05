@@ -57,7 +57,7 @@ for p in PROBES:
     # Choose a B-slice around the mid-time …
     mid_B_idx = len(d['B_gsm'][0]) // 2
     t_mid     = d['B_gsm'][0][mid_B_idx]
-    B_slice   = d['B_gsm'][1][mid_B_idx-64:mid_B_idx+64]
+    B_slice   = d['B_gsm'][1][mid_B_idx-64:mid_B_idx+64, :3]
 
     # Interpolate spacecraft position (POS_gsm is 1-min)
     interp_pos = interp1d(d['POS_gsm'][0], d['POS_gsm'][1],
@@ -66,7 +66,7 @@ for p in PROBES:
     pos_mid = interp_pos(t_mid)            # km GSM @ t_mid
 
     lm = coords.hybrid_lmn(B_slice, pos_gsm_km=pos_mid)
-    B_lmn = lm.to_lmn(vars_grid['B'])
+    B_lmn = lm.to_lmn(vars_grid['B'][:, :3])
     BN = B_lmn[:, 2]
 
     # 2.3  boundary detection
