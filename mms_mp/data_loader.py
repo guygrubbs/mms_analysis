@@ -168,7 +168,10 @@ def to_dataframe(time: np.ndarray,
         dt64 = epoch2000 + time.astype('timedelta64[ns]')
     else:
         dt64 = time.astype('datetime64[ns]')
-    return pd.DataFrame(data, index=dt64, columns=columns)
+    df = pd.DataFrame(data, index=dt64, columns=columns)
+    df = df[~df.index.isna()]
+    df = df.loc[~df.index.duplicated(keep="first")] # ② drop duplicate stamps
+    return df
 
 def resample(df: pd.DataFrame,
              cadence: str = '250ms',

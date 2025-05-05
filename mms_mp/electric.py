@@ -75,8 +75,17 @@ def exb_velocity_sync(t_E: np.ndarray, E_xyz: np.ndarray,
     Returns (t_common, v_kmps  (N,3)).
     """
     # Build DataFrames
-    dfE = to_dataframe(t_E, E_xyz, ['Ex', 'Ey', 'Ez'])
-    dfB = to_dataframe(t_B, B_xyz, ['Bx', 'By', 'Bz'])
+    dfE = to_dataframe(t_E, E_xyz[:, :3], ['Ex', 'Ey', 'Ez'])
+    dfB = to_dataframe(t_B, B_xyz[:, :3], ['Bx', 'By', 'Bz'])
+
+    dfE = dfE[~dfE.index.isna()]
+    dfB = dfB[~dfB.index.isna()]
+
+    # Ensure index uniqueness before resampling
+    for df in (dfE, dfB):
+        if not df.index.is_unique:
+            df.drop_duplicates(inplace=True)                # remove duplicate rows
+            df = df.loc[~df.index.duplicated(keep='first')] # remove any still-duplicate index stamps
 
     dfE_r = resample(dfE, cadence=cadence, method='nearest')
     dfB_r = resample(dfB, cadence=cadence, method='nearest')
@@ -116,24 +125,32 @@ def normal_velocity(v_bulk_lmn: np.ndarray,
                                       'average',
                                       'he_plus_only'] = 'prefer_exb') -> np.ndarray:
     """
-    Return 1-D array of boundary-normal velocity [km/s] according to strategy.
+    Blend He⁺ bulk and E×B drift **normal component**.
 
-    v_bulk_lmn : (N,3) bulk-ion velocity in LMN
-    v_exb_lmn  : (N,3) ExB drift in LMN
+    Handles edge cases when one array is empty or all-NaN.
+    `strategy` chooses which source wins when both are finite.
+        'prefer_exb'  (default)
+        'prefer_bulk'
+        'average'      (mean of available)
     """
-    vN_b = v_bulk_lmn[:, 2]
-    vN_e = v_exb_lmn[:, 2]
+    # --- extract normal component & ensure 1-D -----------------------
+    vN_b = np.atleast_1d(v_bulk_lmn[..., -1])
+    vN_e = np.atleast_1d(v_exb_lmn[..., -1])
 
-    if strategy == 'prefer_exb':
-        # Use ExB except where it's NaN, then fallback to bulk
+    # guard: if one source is length-0, replicate the other’s shape
+    if vN_b.size == 0 and vN_e.size:
+        vN_b = np.full_like(vN_e, np.nan)
+    if vN_e.size == 0 and vN_b.size:
+        vN_e = np.full_like(vN_b, np.nan)
+
+    # now both arrays have matching shape
+    if strategy == 'average':
+        out = np.nanmean(np.stack([vN_b, vN_e]), axis=0)
+    elif strategy == 'prefer_exb':
         out = np.where(np.isfinite(vN_e), vN_e, vN_b)
     elif strategy == 'prefer_bulk':
         out = np.where(np.isfinite(vN_b), vN_b, vN_e)
-    elif strategy == 'average':
-        out = 0.5 * (vN_b + vN_e)
-    elif strategy == 'he_plus_only':
-        # When caller passes He⁺ bulk for v_bulk, just return v_bulk
-        out = vN_b
     else:
-        raise ValueError(f'Unknown strategy {strategy}')
+        raise ValueError(f'unknown strategy {strategy}')
+
     return out

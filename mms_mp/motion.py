@@ -157,7 +157,8 @@ def _lin_fill(arr: np.ndarray) -> np.ndarray:
     Simple linear fill of NaNs in a 1-D array (in-place safe).
     """
     isnan = ~np.isfinite(arr)
-    if not isnan.any():
+    # if everything is NaN, return early
+    if isnan.all():
         return arr
     x = np.arange(len(arr))
     arr[isnan] = np.interp(x[isnan], x[~isnan], arr[~isnan])
