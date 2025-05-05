@@ -145,10 +145,20 @@ def merge_vars(vars_in: Dict[str, Tuple[np.ndarray, np.ndarray]],
         df = pd.DataFrame(d_res, index=t_local)
         df_global = pd.DataFrame(index=t_new)
         merged = df_global.join(df, how='left')
-        # Adopt merged arrays
+        # Save data array
         out_data[var] = merged.values
-        g_pad = np.zeros(len(t_new), dtype=bool)
-        g_pad[merged.notna().all(axis=1).values] = True
-        out_good[var] = g_pad & g_mask  # good only if original good too
+
+        # 1) mask saying “sample exists after join”
+        exists_mask = merged.notna().all(axis=1).values
+
+        # 2) re-index original good_mask to global grid
+        g_mask_full = (
+            pd.Series(g_mask.astype(bool), index=t_local)
+              .reindex(t_new, fill_value=False)
+              .values
+        )
+
+        # 3) final quality: sample exists **and** original was good
+        out_good[var] = exists_mask & g_mask_full
 
     return t_new, out_data, out_good

@@ -11,6 +11,7 @@ import json
 import numpy as np
 import pandas as pd
 from typing import List
+from scipy.interpolate import interp1d
 
 # Local imports
 from . import (data_loader, resample, coords, boundary,
@@ -78,9 +79,15 @@ def main() -> None:
         }, cadence=args.cadence, method='linear')
 
         # 2.2 ─ LMN transform
-        mid = len(d['B_gsm'][1]) // 2
-        lm = coords.hybrid_lmn(d['B_gsm'][1][mid-64:mid+64],
-                               pos_gsm=d['POS_gsm'][1][mid])
+        # Build LMN (B burst vs. POS 1-min → interpolate)
+        mid_B = len(d['B_gsm'][0]) // 2
+        t_mid = d['B_gsm'][0][mid_B]
+        B_seg = d['B_gsm'][1][mid_B-64:mid_B+64]
+        interp_pos = interp1d(data['POS_gsm'][0], data['POS_gsm'][1],
+                              axis=0, bounds_error=False,
+                              fill_value='extrapolate')
+        pos_mid = interp_pos(t_mid)
+        lm = coords.hybrid_lmn(B_seg, pos_gsm=pos_mid)
 
         B_lmn = lm.to_lmn(d['B_gsm'][1])
         BN = B_lmn[:, 2]

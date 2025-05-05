@@ -3,6 +3,7 @@
 
 import numpy as np
 from datetime import datetime
+from scipy.interpolate import interp1d
 
 from mms_mp import (
     data_loader,    # CDF download / load
@@ -50,10 +51,21 @@ for p in PROBES:
                (d['B_gsm'][0], np.full_like(d['B_gsm'][1][:, 0], np.nan)),
     }, cadence=CADENCE, method='linear')
 
-    # 2.2  LMN triad (hybrid)
-    mid = len(d['B_gsm'][1]) // 2
-    lm = coords.hybrid_lmn(d['B_gsm'][1][mid-64:mid+64],
-                           pos_gsm=d['POS_gsm'][1][mid])
+    # --------------------------------------------------------
+    # 4. Build LMN coordinate system (hybrid)
+    # --------------------------------------------------------
+    # Choose a B-slice around the mid-time …
+    mid_B_idx = len(d['B_gsm'][0]) // 2
+    t_mid     = d['B_gsm'][0][mid_B_idx]
+    B_slice   = d['B_gsm'][1][mid_B_idx-64:mid_B_idx+64]
+
+    # Interpolate spacecraft position (POS_gsm is 1-min)
+    interp_pos = interp1d(d['POS_gsm'][0], d['POS_gsm'][1],
+                          axis=0, bounds_error=False,
+                          fill_value='extrapolate')
+    pos_mid = interp_pos(t_mid)            # km GSM @ t_mid
+
+    lm = coords.hybrid_lmn(B_slice, pos_gsm=pos_mid)
     B_lmn = lm.to_lmn(vars_grid['B'])
     BN = B_lmn[:, 2]
 
