@@ -19,7 +19,7 @@ from mms_mp import (
 # ──────────────────────────────────────────────────────────────
 # 1. User settings
 # ──────────────────────────────────────────────────────────────
-TRANGE   = ['2019-01-27/11:00:00', '2019-01-27/13:00:00']
+TRANGE   = ['2019-01-27/12:30:00', '2019-01-27/12:40:00']
 PROBES   = ['1', '2', '3', '4']
 CADENCE  = '150ms'
 THR_CFG  = boundary.DetectorCfg(he_in=0.25, he_out=0.15, BN_tol=1.0)
@@ -65,7 +65,7 @@ for p in PROBES:
                           fill_value='extrapolate')
     pos_mid = interp_pos(t_mid)            # km GSM @ t_mid
 
-    lm = coords.hybrid_lmn(B_slice, pos_gsm=pos_mid)
+    lm = coords.hybrid_lmn(B_slice, pos_gsm_km=pos_mid)
     B_lmn = lm.to_lmn(vars_grid['B'])
     BN = B_lmn[:, 2]
 
