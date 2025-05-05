@@ -51,52 +51,74 @@ def shade_layers(ax: plt.Axes,
         ax.axvspan(t[i1], t[i2], color=colors.get(typ, 'lightgrey'), alpha=0.15, lw=0)
 
 # ------------------------------------------------------------------
-# Single-probe quick-look
+# Single-probe quick-look (now with electrons)
 # ------------------------------------------------------------------
 def summary_single(t: np.ndarray,
                    B_lmn: np.ndarray,
-                   N_tot: np.ndarray,
+                   N_i: np.ndarray,
+                   N_e: np.ndarray,
                    N_he: np.ndarray,
-                   vN_tot: np.ndarray,
+                   vN_i: np.ndarray,
+                   vN_e: np.ndarray,
                    vN_he: np.ndarray,
                    *,
                    layers: Optional[List[Tuple[str, int, int]]] = None,
                    title: str = '',
-                   figsize=(9, 8),
+                   figsize: Tuple[int, int] = (9, 9),
                    show: bool = True,
                    ax: Optional[Iterable[plt.Axes]] = None
                    ) -> List[plt.Axes]:
     """
-    4-panel overview (B, densities, velocities, displacement).
+    5-panel overview:
+        0 – B_L, B_M, B_N       (LMN field)
+        1 – N_i, N_e, N(He+)    (densities)
+        2 – V_N ions / electrons / He+
+        3 – [reserved for displacement – caller can plot later]
+        4 – empty spacer (or user custom)
     """
+    import matplotlib.pyplot as plt
+    import matplotlib.dates as mdates
+
     if ax is None:
-        fig, ax = plt.subplots(4, 1, sharex=True, figsize=figsize)
+        fig, ax = plt.subplots(5, 1, sharex=True, figsize=figsize)
     ax = list(ax)
 
+    # ── Panel 0 : Magnetic field ────────────────────────────────
     ax[0].plot(t, B_lmn[:, 0], label='B_L')
     ax[0].plot(t, B_lmn[:, 1], label='B_M')
     ax[0].plot(t, B_lmn[:, 2], label='B_N')
-    ax[0].set_ylabel('B (nT)'); ax[0].legend(loc='upper right')
+    ax[0].set_ylabel('B (nT)')
+    ax[0].legend(loc='upper right')
 
-    ax[1].plot(t, N_tot, label='N_i total')
-    ax[1].plot(t, N_he, label='N(He+)', lw=1.3)
-    ax[1].set_ylabel('Density (cm$^{-3}$)'); ax[1].legend(loc='upper right')
+    # ── Panel 1 : Densities ─────────────────────────────────────
+    ax[1].plot(t, N_i,  label='N$_i$ total')
+    ax[1].plot(t, N_e,  label='N$_e$', lw=1.2)
+    ax[1].plot(t, N_he, label='N(He$^+$)', lw=1.2)
+    ax[1].set_ylabel('Density (cm$^{-3}$)')
+    ax[1].legend(loc='upper right')
 
-    ax[2].plot(t, vN_tot, label='V_N ion')
-    ax[2].plot(t, vN_he, label='V_N He+', lw=1.3)
-    ax[2].set_ylabel('V$_N$ (km/s)'); ax[2].legend(loc='upper right')
+    # ── Panel 2 : Normal velocities ────────────────────────────
+    ax[2].plot(t, vN_i,  label='V$_N$ ions')
+    ax[2].plot(t, vN_e,  label='V$_N$ e$^-$',  lw=1.2)
+    ax[2].plot(t, vN_he, label='V$_N$ He$^+$', lw=1.2)
+    ax[2].set_ylabel('V$_N$ (km/s)')
+    ax[2].legend(loc='upper right')
 
+    # ── Shade identified layers on top 3 panels ────────────────
     if layers:
         for a in ax[:3]:
             shade_layers(a, layers, t)
 
-    ax[3].axis('off')  # free slot (for displacement externally)
+    # ── Axes 3 & 4 reserved (caller can add displacement, etc.) ─
+    ax[3].axis('off')
+    ax[4].axis('off')
 
+    # ── Shared formatting ───────────────────────────────────────
     ax[-1].set_xlabel('UTC')
     ax[-1].xaxis.set_major_formatter(mdates.DateFormatter('%H:%M:%S'))
-
     if title:
         ax[0].set_title(title)
+
     if show:
         plt.tight_layout()
         plt.show()

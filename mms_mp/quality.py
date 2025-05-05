@@ -1,87 +1,71 @@
 # mms_mp/quality.py
 # ------------------------------------------------------------
-# Automated sample-quality handling  – NEW MODULE
+# Automated sample-quality handling   (May-2025 refresh)
 # ------------------------------------------------------------
-# MMS Level-2 CDFs include “quality” or “status” bit-fields
-# for several instruments.  Systematically masking / fixing
-# them here keeps the science steps cleaner.
-#
-# Supported today
-# ---------------
-# • FPI-DIS / DES   (ions / electrons)
-#     var: *_quality_flag
-#     0 = good, 1 = suspect, 2 = bad
-#
-# • HPCA
-#     var: *_status_flag
-#     bit-decoded per HPCA guide;   we treat any non-zero as bad.
-#
-# • Generic boolean mask helpers
+# ‣ Adds DES (electron) quality masks, matching the MMS4 anomaly logic.
+# ‣ Provides `resample_mask()` so bit-field masks can be put on the
+#   same uniform grid as science data (wraps mms_mp.resample.resample).
+# ‣ `build_quality_masks()` now returns masks for FPI-ion (DIS),
+#   FPI-electron (DES), and HPCA when they exist in the event dict
+#   produced by data_loader.load_event().
 # ------------------------------------------------------------
 from __future__ import annotations
-
 import numpy as np
-import pandas as pd
-from typing import Dict, Tuple, Optional, Iterable
+from typing import Dict, Tuple, Iterable, Optional
+# local resample helper
+try:
+    from ..resample import resample as _resample  # inside package
+except ValueError:  # running as script
+    from resample import resample as _resample
+
 
 # ------------------------------------------------------------------
-# FPI Quality
+# Generic flag-mask helpers
 # ------------------------------------------------------------------
-def fpi_good_mask(qflag: np.ndarray,
-                  *, accept_levels: Iterable[int] = (0,)) -> np.ndarray:
+def _flag_mask(flag: np.ndarray,
+               accept_levels: Iterable[int] = (0,)) -> np.ndarray:
+    """Return True for samples whose flag is in accept_levels."""
+    return np.isin(flag, list(accept_levels))
+
+
+# ------------------------------------------------------------------
+# DIS / DES quality masks
+# ------------------------------------------------------------------
+def dis_good_mask(flag: np.ndarray,
+                  accept_levels: Iterable[int] = (0,)) -> np.ndarray:
+    """Ion spectrometer (DIS) – same convention for burst/fast."""
+    return _flag_mask(flag, accept_levels)
+
+
+def des_good_mask(flag: np.ndarray,
+                  accept_levels: Iterable[int] = (0, 1)) -> np.ndarray:
     """
-    Parameters
-    ----------
-    qflag : 1-D array of uint8 (FPI quality flag per CDF docs)
-    accept_levels :  tuple/list of integers deemed "usable"
-                     default (0,)  == only perfect data
-
-    Returns  – boolean mask (True = sample accepted)
+    Electron spectrometer (DES) – by default keep level-1 (“suspect”)
+    samples because MMS4 post-2018 often has no level-0 burst data.
     """
-    return np.isin(qflag, list(accept_levels))
+    return _flag_mask(flag, accept_levels)
 
 
 # ------------------------------------------------------------------
-# HPCA Status
+# HPCA status mask
 # ------------------------------------------------------------------
-def hpca_good_mask(status_flag: np.ndarray,
-                   *, accept_zero_only: bool = True) -> np.ndarray:
-    """
-    HPCA status bit-field (uint32).
-    If accept_zero_only is True, any non-zero bit is bad.
-    """
-    if accept_zero_only:
-        return status_flag == 0
-    # else: could add bit-level nuance later
-    return np.ones_like(status_flag, dtype=bool)
+def hpca_good_mask(status: np.ndarray, accept_zero_only: bool = True) -> np.ndarray:
+    """Treat any non-zero status bit as bad by default."""
+    return status == 0 if accept_zero_only else np.ones_like(status, bool)
 
 
 # ------------------------------------------------------------------
-# Apply mask to data arrays
+# Mask application / utilities
 # ------------------------------------------------------------------
 def apply_mask(data: np.ndarray,
                mask: np.ndarray,
-               *,
                fill_value: float = np.nan) -> np.ndarray:
-    """
-    Set data[~mask] = fill_value.  Works for N×… arrays.
-    """
-    masked = data.copy()
-    if masked.ndim == 1:
-        masked[~mask] = fill_value
-    else:
-        masked[~mask, ...] = fill_value
-    return masked
+    out = data.copy()
+    out[~mask] = fill_value
+    return out
 
 
-# ------------------------------------------------------------------
-# Combine multiple masks (logical AND)
-# ------------------------------------------------------------------
 def combine_masks(*masks: np.ndarray) -> np.ndarray:
-    """
-    ANDs an arbitrary number of boolean masks.
-    Shape checking left to caller.
-    """
     if not masks:
         raise ValueError("No masks given")
     combo = masks[0].copy()
@@ -90,52 +74,62 @@ def combine_masks(*masks: np.ndarray) -> np.ndarray:
     return combo
 
 
-# ------------------------------------------------------------------
-# Gap-fill tiny holes (optional)
-# ------------------------------------------------------------------
-def patch_small_gaps(mask: np.ndarray,
-                     max_gap: int = 3) -> np.ndarray:
-    """
-    Turn short sequences of False (bad) shorter than max_gap
-    into True (good) to ease plotting / interpolation.
-    """
+def patch_small_gaps(mask: np.ndarray, max_gap: int = 3) -> np.ndarray:
     bad = ~mask
-    # find sequences
     idx = np.where(bad)[0]
     if idx.size == 0:
         return mask
     gaps = np.split(idx, np.where(np.diff(idx) != 1)[0] + 1)
-
-    patched = mask.copy()
+    fixed = mask.copy()
     for g in gaps:
         if 0 < len(g) <= max_gap:
-            patched[g] = True
-    return patched
+            fixed[g] = True
+    return fixed
+
+
+def resample_mask(t_orig: np.ndarray,
+                  mask: np.ndarray,
+                  t_target: np.ndarray,
+                  method: str = 'nearest') -> np.ndarray:
+    """
+    Resample a boolean quality mask onto *t_target* grid using
+    the toolkit’s resample helper.
+    """
+    _, mask_rs, _ = _resample(t_orig, mask.astype(float),
+                              cadence='custom', method=method,
+                              t_new=t_target)  # custom cadence path
+    return np.isfinite(mask_rs) & (mask_rs > 0.5)
 
 
 # ------------------------------------------------------------------
-# Example convenience wrapper
+# Build masks from event dict
 # ------------------------------------------------------------------
 def build_quality_masks(event: Dict[str, Dict[str, Tuple[np.ndarray, np.ndarray]]],
                         probe: str = '1') -> Dict[str, np.ndarray]:
     """
-    From the event dict (output of data_loader.load_event),
-    build standard masks for key instruments on a per-probe basis.
+    Collect standard masks for DIS (ions), DES (electrons), and HPCA.
+    The event dict must come from data_loader.load_event (which loads
+    the _quality_flag variables automatically when present).
     """
-    q = {}
+    q: Dict[str, np.ndarray] = {}
 
-    # --- FPI ---
-    try:
-        t_q, fpi_flag = event[probe]['fpi_quality']  # must be loaded separately
-        q['FPI'] = fpi_good_mask(fpi_flag)
-    except KeyError:
-        pass
+    # FPI ion (DIS)
+    key = f'mms{probe}'
+    dis_flag_name = f'{key}_dis_quality_flag'
+    if dis_flag_name in event[probe]:
+        _, flag_dis = event[probe][dis_flag_name]
+        q['DIS'] = dis_good_mask(flag_dis)
 
-    # --- HPCA ---
-    try:
-        t_s, hpca_stat = event[probe]['hpca_status']
-        q['HPCA'] = hpca_good_mask(hpca_stat)
-    except KeyError:
-        pass
+    # FPI electron (DES)
+    des_flag_name = f'{key}_des_quality_flag'
+    if des_flag_name in event[probe]:
+        _, flag_des = event[probe][des_flag_name]
+        q['DES'] = des_good_mask(flag_des)
+
+    # HPCA
+    hpca_stat_name = f'{key}_hpca_status_flag'
+    if hpca_stat_name in event[probe]:
+        _, stat_hpca = event[probe][hpca_stat_name]
+        q['HPCA'] = hpca_good_mask(stat_hpca)
 
     return q

@@ -12,60 +12,60 @@ Key additions
 """
 
 from typing import List, Dict, Tuple, Optional
-from pathlib import Path
 import numpy as np
 import pandas as pd
 
 from pyspedas.projects import mms
 from pytplot import tplot_names
-from pyspedas import get_data, tplot, store_data
-from pytplot import data_quants
+from pyspedas import get_data
 
 # -----------------------------------------------------------------------------
 # Low-level wrappers around pySPEDAS mission loaders
 # -----------------------------------------------------------------------------
-def _download_kwargs(download_only: bool) -> dict:
-    return dict(downloadonly=download_only, notplot=download_only)
+def _dl_kwargs(download_only: bool) -> dict:
+    return dict(notplot=download_only)
 
-def load_fgm(trange: List[str], probe: List[str], *,
-             data_rate: str = 'brst', level: str = 'l2',
-             download_only: bool = False):
-    return mms.mms_load_fgm(trange=trange, probe=probe, data_rate=data_rate,
+
+def load_fgm(tr, pr, *, data_rate='brst', level='l2', download_only=False):
+    return mms.mms_load_fgm(trange=tr, probe=pr, data_rate=data_rate,
                             level=level, get_support_data=True, time_clip=True,
-                            **_download_kwargs(download_only))
+                            **_dl_kwargs(download_only))
 
-def load_fpi(trange: List[str], probe: List[str], *,
-             data_rate: str = 'brst', level: str = 'l2',
-             species: str = 'dis', moment_type: str = 'moms',
-             download_only: bool = False):
-    return mms.mms_load_fpi(trange=trange, probe=probe,
-                            data_rate=data_rate, level=level,
-                            datatype=f'{species}-{moment_type}',
-                            time_clip=True, **_download_kwargs(download_only))
 
-def load_hpca(trange: List[str], probe: List[str], *,
-              data_rate: str = 'brst', level: str = 'l2',
-              moment_type: str = 'moments',
-              download_only: bool = False):
-    return mms.mms_load_hpca(trange=trange, probe=probe,
-                             data_rate=data_rate, level=level,
-                             datatype=moment_type, time_clip=True,
-                             **_download_kwargs(download_only))
+def load_fpi_dis(tr, pr, *, data_rate='brst', level='l2', download_only=False):
+    return mms.mms_load_fpi(trange=tr, probe=pr, data_rate=data_rate,
+                            level=level, datatype='dis-moms', time_clip=True,
+                            **_dl_kwargs(download_only))
 
-def load_edp(trange: List[str], probe: List[str], *,
-             data_rate: str = 'brst', level: str = 'l2',
-             datatype: str = 'dce',   # electric field (dce) or scpot
-             download_only: bool = False):
-    return mms.mms_load_edp(trange=trange, probe=probe,
-                            data_rate=data_rate, level=level,
-                            datatype=datatype, time_clip=True,
-                            **_download_kwargs(download_only))
+
+def load_fpi_des(tr, pr, *, data_rate='brst', level='l2', download_only=False):
+    return mms.mms_load_fpi(trange=tr, probe=pr, data_rate=data_rate,
+                            level=level, datatype='des-moms', time_clip=True,
+                            **_dl_kwargs(download_only))
+
+
+def load_hpca(tr, pr, *, data_rate='brst', level='l2', download_only=False):
+    return mms.mms_load_hpca(trange=tr, probe=pr, data_rate=data_rate,
+                             level=level, datatype='moments', time_clip=True,
+                             **_dl_kwargs(download_only))
+
+
+def load_edp(tr, pr, *, data_rate='brst', level='l2',
+             datatype='dce', download_only=False):
+    return mms.mms_load_edp(trange=tr, probe=pr, data_rate=data_rate,
+                            level=level, datatype=datatype, time_clip=True,
+                            **_dl_kwargs(download_only))
 
 def load_ephemeris(trange: List[str], probe: List[str], *,
                    download_only: bool = False):
-    """Spacecraft position (GSM) & attitude."""
-    return mms.mms_load_pos(trange=trange, probe=probe, time_clip=True,
-                            **_download_kwargs(download_only))
+    """
+    MMS ephemeris (position/velocity): wrapper on mms_load_state
+    → loads 'pos' (km GSM) into variables like mms?_defeph_pos
+    """
+    return mms.mms_load_state(trange=trange, probe=probe,
+                              datatypes='pos', level='def',
+                              time_clip=True,
+                              **_dl_kwargs(download_only))
 
 # -----------------------------------------------------------------------------
 # High-level “event” loader
@@ -94,7 +94,8 @@ def load_event(trange: List[str],
 
     # ---- Call instrument loaders ----
     load_fgm(trange, probes, data_rate=data_rate_fgm, download_only=download_only)
-    load_fpi(trange, probes, data_rate=data_rate_fpi, download_only=download_only)
+    load_fpi_dis(trange, probes, data_rate=data_rate_fpi, download_only=download_only)
+    load_fpi_des(trange, probes, data_rate=data_rate_fpi, download_only=download_only)
     load_hpca(trange, probes, data_rate=data_rate_hpca, download_only=download_only)
     if include_edp:
         load_edp(trange, probes, datatype='dce', download_only=download_only)
@@ -108,29 +109,34 @@ def load_event(trange: List[str],
     # ---- Collect variables into dict ----
     for p in probes:
         key = f'mms{p}'
-        pairs = {
-            'B_gsm':           f'{key}_fgm_b_gsm_{data_rate_fgm}_l2',
-            'N_tot':           f'{key}_dis_numberdensity_{data_rate_fpi}',
-            'V_i_gse':         f'{key}_dis_bulkv_gse_{data_rate_fpi}',
-            'N_he':            f'{key}_hpca_heplus_number_density',
-            'V_he_gsm':        f'{key}_hpca_heplus_ion_bulk_velocity',
-        }
-        if include_edp:
-            pairs.update({
-                'E_gse':        f'{key}_edp_dce_gse_{data_rate_fgm}_l2',  # naming nuance
-                'SC_pot':       f'{key}_edp_scpot_brst_l2',
-            })
-        if include_ephem:
-            pairs.update({
-                'POS_gsm':      f'{key}_pos_gsm',  # from mms_load_pos
-            })
+        def _tp(var):  # convenience
+            if var not in tplot_names():
+                raise ValueError(f'Missing var {var}')
+            return get_data(var)
 
-        # Pull from tplot storage
-        for new_name, tp_name in pairs.items():
-            if tp_name not in tplot_names():
-                raise ValueError(f'Variable missing: {tp_name}')
-            t_arr, d_arr = get_data(tp_name)
-            event[p][new_name] = (t_arr, d_arr)
+        # ion moments
+        event[p]['B_gsm']   = _tp(f'{key}_fgm_b_gsm_{data_rate_fgm}_l2')
+        event[p]['N_tot']   = _tp(f'{key}_dis_numberdensity_{data_rate_fpi}')
+        event[p]['V_i_gse'] = _tp(f'{key}_dis_bulkv_gse_{data_rate_fpi}')
+
+        # electron moments – burst first, else fast (MMS4 post-2018)
+        des_postfix = data_rate_fpi
+        if (f'{key}_des_numberdensity_{data_rate_fpi}' not in tplot_names()
+                and p == '4'):
+            des_postfix = 'fast'   # fallback
+        event[p]['N_e']     = _tp(f'{key}_des_numberdensity_{des_postfix}')
+        event[p]['V_e_gse'] = _tp(f'{key}_des_bulkv_gse_{des_postfix}')
+
+        # HPCA cold ions
+        event[p]['N_he']    = _tp(f'{key}_hpca_heplus_number_density')
+        event[p]['V_he_gsm']= _tp(f'{key}_hpca_heplus_ion_bulk_velocity')
+
+        if include_edp:
+            event[p]['E_gse']  = _tp(f'{key}_edp_dce_gse_{data_rate_fgm}_l2')
+            event[p]['SC_pot'] = _tp(f'{key}_edp_scpot_brst_l2')
+
+        if include_ephem:
+            event[p]['POS_gsm'] = _tp(f'{key}_defeph_pos')
 
     return event
 
