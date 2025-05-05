@@ -64,7 +64,6 @@ def load_ephemeris(trange: List[str], probe: List[str], *,
     """
     return mms.mms_load_state(trange=trange, probe=probe,
                               datatypes='pos', level='def',
-                              time_clip=True,
                               **_dl_kwargs(download_only))
 
 # -----------------------------------------------------------------------------
