@@ -1,0 +1,103 @@
+# ------------------------------------------------------------
+# Python / MMS Magnetopause Toolkit  •  .gitignore
+# ------------------------------------------------------------
+
+############################
+# Core Python               #
+############################
+*.pyc
+*.pyo
+*.pyd
+__pycache__/
+*.so
+*.dylib
+
+############################
+# Virtual-env & tooling     #
+############################
+# generic venv / conda / pipenv
+.venv/
+venv/
+env/
+ENV/
+.conda/
+# poetry
+.poetry/
+# pipenv lock
+Pipfile.lock
+
+############################
+# Build / dist / egg        #
+############################
+build/
+dist/
+*.egg-info/
+.eggs/
+*.egg
+# wheelhouse
+wheelhouse/
+
+############################
+# IDE / editor metadata     #
+############################
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+############################
+# Testing & coverage        #
+############################
+.pytest_cache/
+.tox/
+.coverage
+htmlcov/
+nosetests.xml
+coverage.xml
+
+############################
+# Jupyter / notebooks       #
+############################
+.ipynb_checkpoints/
+*.ipynb
+
+############################
+# Data & large binaries     #
+############################
+# local CDAWeb / pySPEDAS cache
+.pyspedas/
+# raw CDFs downloaded manually
+*.cdf
+*.CDF
+# large binary checkpoints
+*.h5
+*.nc
+
+############################
+# Output folders            #
+############################
+results/
+figures/
+logs/
+pydata/
+
+############################
+# OS-specific clutter       #
+############################
+.DS_Store
+Thumbs.db
+ehthumbs.db
+desktop.ini
+$RECYCLE.BIN/
+
+############################
+# Archives & temp files     #
+############################
+*.tar
+*.tar.gz
+*.tgz
+*.zip
+*.bak
+*.tmp
+*.log
