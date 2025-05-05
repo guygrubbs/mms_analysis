@@ -56,15 +56,19 @@ def load_edp(tr, pr, *, data_rate='brst', level='l2',
                             level=level, datatype=datatype, time_clip=True,
                             **_dl_kwargs(download_only))
 
-def load_ephemeris(trange: List[str], probe: List[str], *,
-                   download_only: bool = False):
+def load_ephemeris(tr, pr, *, download_only=False):
     """
-    MMS ephemeris (position/velocity): wrapper on mms_load_state
-    → loads 'pos' (km GSM) into variables like mms?_defeph_pos
+    MMS ephemeris (position/velocity).  Newer mms_load_state versions
+    don’t accept 'notplot', so we pass **no extra flags** in normal mode
+    and use 'downloadonly' when the caller wants a download-only pass.
     """
-    return mms.mms_load_state(trange=trange, probe=probe,
-                              datatypes='pos', level='def',
-                              **_dl_kwargs(download_only))
+    if download_only:
+        return mms.mms_load_state(trange=tr, probe=pr,
+                                  datatypes='pos', level='def',
+                                  downloadonly=True)
+    return mms.mms_load_state(trange=tr, probe=pr,
+                              datatypes='pos', level='def')
+
 
 # -----------------------------------------------------------------------------
 # High-level “event” loader
