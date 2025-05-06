@@ -101,6 +101,9 @@ for p in PROBES:
     else:
         vN = vN_he
 
+    if np.all(~np.isfinite(vN)):
+        vN = vN_i         # use ion bulk V_N as a last resort
+
     # ── 2.5  integrate displacement ────────────────────────────
     disp = motion.integrate_disp(t_grid, vN, good_mask=mask_all)
 

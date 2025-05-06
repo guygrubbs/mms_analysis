@@ -1,187 +1,255 @@
-"""
-data_loader.py  ·  MMS event data access helpers
-================================================
+# mms_mp/data_loader.py  – 2025-05-06  “fast-only default” edition
+# ==========================================================================
+# • By default **only the `fast` cadence** is downloaded for FGM/FPI/HPCA.
+# • Optional cadences can be enabled instrument-by-instrument:
+#       include_brst=True   include_srvy=True   include_slow=True
+# • Everything else (sanity tests, trimming, NaN placeholders) unchanged.
+# ==========================================================================
 
-Key additions
--------------
-1.  Instrument-specific convenience loaders (FGM, FPI, HPCA, EDP, EPHEM).
-2.  Optional *download-only* and local-cache support.
-3.  Ability to return **pandas.DataFrame** objects for quick analysis.
-4.  Simple, uniform **resample** helper to put disparate variables on a common cadence.
-5.  Graceful handling of missing variables (raises ValueError with list of missing keys).
-"""
-
+from __future__ import annotations
 from typing import List, Dict, Tuple, Optional
+import fnmatch, warnings
 import numpy as np
 import pandas as pd
 
 from pyspedas.projects import mms
-from pytplot import tplot_names
 from pyspedas import get_data
+from pytplot import data_quants
 
-# -----------------------------------------------------------------------------
-# Low-level wrappers around pySPEDAS mission loaders
-# -----------------------------------------------------------------------------
+# ═════════════════════════════ helpers ════════════════════════════════════
 def _dl_kwargs(download_only: bool) -> dict:
     return dict(notplot=download_only)
 
 
-def load_fgm(tr, pr, *, data_rate='brst', level='l2', download_only=False):
-    return mms.mms_load_fgm(trange=tr, probe=pr, data_rate=data_rate,
-                            level=level, get_support_data=True, time_clip=True,
-                            **_dl_kwargs(download_only))
+def _load(instr: str, rates: List[str], *, trange, probe,
+          download_only: bool = False, **extra):
+    """Try each cadence in *rates* until one succeeds (silent failures)."""
+    fn = getattr(mms, f"mms_load_{instr}")
+    for rate in rates:
+        try:
+            fn(trange=trange, probe=probe, data_rate=rate,
+               **extra, **_dl_kwargs(download_only))
+        except Exception:
+            continue
 
 
-def load_fpi_dis(tr, pr, *, data_rate='brst', level='l2', download_only=False):
-    return mms.mms_load_fpi(trange=tr, probe=pr, data_rate=data_rate,
-                            level=level, datatype='dis-moms', time_clip=True,
-                            **_dl_kwargs(download_only))
-
-
-def load_fpi_des(tr, pr, *, data_rate='brst', level='l2', download_only=False):
-    return mms.mms_load_fpi(trange=tr, probe=pr, data_rate=data_rate,
-                            level=level, datatype='des-moms', time_clip=True,
-                            **_dl_kwargs(download_only))
-
-
-def load_hpca(tr, pr, *, data_rate='brst', level='l2', download_only=False):
-    return mms.mms_load_hpca(trange=tr, probe=pr, data_rate=data_rate,
-                             level=level, datatype='moments', time_clip=True,
-                             **_dl_kwargs(download_only))
-
-
-def load_edp(tr, pr, *, data_rate='brst', level='l2',
-             datatype='dce', download_only=False):
-    return mms.mms_load_edp(trange=tr, probe=pr, data_rate=data_rate,
-                            level=level, datatype=datatype, time_clip=True,
-                            **_dl_kwargs(download_only))
-
-def load_ephemeris(tr, pr, *, download_only=False):
-    """
-    MMS ephemeris (position/velocity).  Newer mms_load_state versions
-    don’t accept 'notplot', so we pass **no extra flags** in normal mode
-    and use 'downloadonly' when the caller wants a download-only pass.
-    """
+def _load_state(trange, probe, *, download_only=False):
+    kw = dict(trange=trange, probe=probe, datatypes='pos', level='def')
     if download_only:
-        return mms.mms_load_state(trange=tr, probe=pr,
-                                  datatypes='pos', level='def',
-                                  downloadonly=True)
-    return mms.mms_load_state(trange=tr, probe=pr,
-                              datatypes='pos', level='def')
+        kw['downloadonly'] = True
+    return mms.mms_load_state(**kw)
+
+# ───────────────────────── variable discovery ────────────────────────────
+def _is_valid(varname: str, expect_cols: Optional[int] = None) -> bool:
+    try:
+        t, d = get_data(varname)
+    except Exception:
+        return False
+    if t is None or d is None or len(t) == 0:
+        return False
+    if expect_cols and d.ndim == 2 and d.shape[1] != expect_cols:
+        return False
+    if not np.isfinite(d).any() or np.nanmin(np.abs(d)) > 9e30:
+        return False
+    return True
 
 
-# -----------------------------------------------------------------------------
-# High-level “event” loader
-# -----------------------------------------------------------------------------
-def load_event(trange: List[str],
-               probes: List[str] = ('1', '2', '3', '4'),
-               *,
-               data_rate_fgm: str = 'brst',
-               data_rate_fpi: str = 'brst',
-               data_rate_hpca: str = 'brst',
-               include_edp: bool = False,
-               include_ephem: bool = True,
-               download_only: bool = False) -> Dict[str, Dict[str, Tuple[np.ndarray, np.ndarray]]]:
+def _first_valid_var(patterns: List[str], expect_cols: Optional[int] = None):
+    for pat in patterns:
+        if pat in data_quants and _is_valid(pat, expect_cols):
+            return pat
+        for hit in fnmatch.filter(data_quants.keys(), pat):
+            if _is_valid(hit, expect_cols):
+                return hit
+    return None
+
+# ───────────────────────── misc helpers ───────────────────────────
+def _trim_to_match(time: np.ndarray, data: np.ndarray):
+    if len(time) == data.shape[0]:
+        return time, data
+    n = min(len(time), data.shape[0])
+    warnings.warn(
+        f'[data_loader] trimming time={len(time)} / data={data.shape[0]} → {n}')
+    return time[:n], data[:n]
+
+
+def _tt2000_to_datetime64_ns(arr: np.ndarray) -> np.ndarray:
+    epoch2000 = np.datetime64('2000-01-01T12:00:00')
+    work = arr.astype('float64', copy=False)
+    bad = ~np.isfinite(work) | (np.abs(work) > 9e30)
+    work[bad] = 0.0
+    out = epoch2000 + work.astype('int64', copy=False).astype('timedelta64[ns]')
+    out[bad] = np.datetime64('NaT')
+    return out
+
+
+_tp = get_data  # shorthand
+
+# ═════════════════════════════ main loader ════════════════════════════════
+def load_event(
+        trange: List[str],
+        probes: List[str] = ('1', '2', '3', '4'),
+        *,
+        data_rate_fgm: str = 'fast',
+        data_rate_fpi: str = 'fast',
+        data_rate_hpca: str = 'fast',
+        include_brst: bool = False,
+        include_srvy: bool = False,
+        include_slow: bool = False,
+        include_edp: bool = False,
+        include_ephem: bool = True,
+        download_only: bool = False
+) -> Dict[str, Dict[str, Tuple[np.ndarray, np.ndarray]]]:
     """
-    Returns
-    -------
-    event : dict
-        event[probe][var_key] = (time_array, data_array)
-        var_key naming scheme:
-            B_gsm, N_tot, V_i_gse,
-            N_he, V_he_gsm,
-            E_gse, SC_pot      (if EDP requested)
-            POS_gsm            (if ephemeris requested)
+    By default only the 'fast' cadence is used.
+    Set include_brst / include_srvy / include_slow to True to add extras.
     """
-    event: Dict[str, Dict[str, Tuple[np.ndarray, np.ndarray]]] = {p: {} for p in probes}
 
-    # ---- Call instrument loaders ----
-    load_fgm(trange, probes, data_rate=data_rate_fgm, download_only=download_only)
-    load_fpi_dis(trange, probes, data_rate=data_rate_fpi, download_only=download_only)
-    load_fpi_des(trange, probes, data_rate=data_rate_fpi, download_only=download_only)
-    load_hpca(trange, probes, data_rate=data_rate_hpca, download_only=download_only)
+    # ----- 1) decide which cadences to fetch --------------------------------
+    def _cadence_list(preferred: str) -> List[str]:
+        extra = []
+        if include_brst and 'brst' not in extra and preferred != 'brst':
+            extra.append('brst')
+        if include_srvy and 'srvy' not in extra and preferred != 'srvy':
+            extra.append('srvy')
+        if include_slow and 'slow' not in extra and preferred != 'slow':
+            extra.append('slow')
+        return [preferred] + extra
+
+    fgm_rates  = _cadence_list(data_rate_fgm)
+    fpi_rates  = _cadence_list(data_rate_fpi)
+    hpca_rates = _cadence_list(data_rate_hpca)
+
+    # ----- 2) download phase -------------------------------------------------
+    _load('fgm',  fgm_rates,  trange=trange, probe=probes,
+          level='l2', get_support_data=True, time_clip=True,
+          download_only=download_only)
+    _load('fpi',  fpi_rates,  trange=trange, probe=probes,
+          level='l2', datatype='dis-moms', time_clip=True,
+          download_only=download_only)
+    _load('fpi',  fpi_rates,  trange=trange, probe=probes,
+          level='l2', datatype='des-moms', time_clip=True,
+          download_only=download_only)
+    _load('hpca', hpca_rates, trange=trange, probe=probes,
+          level='l2', datatype='moments', time_clip=True,
+          download_only=download_only)
+
     if include_edp:
-        load_edp(trange, probes, datatype='dce', download_only=download_only)
-        load_edp(trange, probes, datatype='scpot', download_only=download_only)
+        _load('edp', _cadence_list('fast'), trange=trange, probe=probes,
+              level='l2', datatype='dce', time_clip=True,
+              download_only=download_only)
+        _load('edp', _cadence_list('fast'), trange=trange, probe=probes,
+              level='l2', datatype='scpot', time_clip=True,
+              download_only=download_only)
+
     if include_ephem:
-        load_ephemeris(trange, probes, download_only=download_only)
+        for pr in probes:
+            _load_state(trange, pr, download_only=download_only)
 
     if download_only:
-        return event  # paths downloaded, nothing else to do
+        return {p: {} for p in probes}
 
-    # ---- Collect variables into dict ----
+    # ----- 3) harvest variables ---------------------------------------------
+    evt: Dict[str, Dict[str, Tuple[np.ndarray, np.ndarray]]] = {p: {} for p in probes}
     for p in probes:
         key = f'mms{p}'
-        def _tp(var):  # convenience
-            if var not in tplot_names():
-                raise ValueError(f'Missing var {var}')
-            return get_data(var)
 
-        # ion moments
-        event[p]['B_gsm']   = _tp(f'{key}_fgm_b_gsm_{data_rate_fgm}_l2')
-        event[p]['N_tot']   = _tp(f'{key}_dis_numberdensity_{data_rate_fpi}')
-        event[p]['V_i_gse'] = _tp(f'{key}_dis_bulkv_gse_{data_rate_fpi}')
+        # mandatory ions
+        ion_nd = _first_valid_var([f'{key}_dis_numberdensity_*'])
+        if ion_nd is None:
+            raise RuntimeError(f'MMS{p}: ion density not found — aborting')
+        suff = ion_nd.split('_')[-1]
+        evt[p]['N_tot']   = _tp(ion_nd)
+        evt[p]['V_i_gse'] = _tp(f'{key}_dis_bulkv_gse_{suff}')
 
-        # ── DES electrons with multi-level fallback ──────────────────
-        _found = False
-        for des_postfix in [data_rate_fpi, 'fast', 'srvy']:
-            var_test = f'{key}_des_numberdensity_{des_postfix}'
-            if var_test in tplot_names():
-                event[p]['N_e']     = _tp(var_test)
-                event[p]['V_e_gse'] = _tp(f'{key}_des_bulkv_gse_{des_postfix}')
-                _found = True
-                break
-        if not _found:
-            # create NaN stubs so downstream code can continue gracefully
-            print(f'[WARN] DES moments absent for MMS{p} – electrons skipped')
-            t_stub = event[p]['N_tot'][0]        # use ion-density clock
-            nan_vec = np.full_like(event[p]['V_i_gse'][1], np.nan)
-            event[p]['N_e']     = (t_stub, np.full_like(event[p]['N_tot'][1], np.nan))
-            event[p]['V_e_gse'] = (t_stub, nan_vec)
+        # --- B-field (vector, 3-column preferred) ---------------------------
+        # try exact 3-column first …
+        B_var = _first_valid_var([f'{key}_fgm_b_gsm_*'], expect_cols=3)
 
-        # HPCA cold ions
-        event[p]['N_he']    = _tp(f'{key}_hpca_heplus_number_density')
-        event[p]['V_he_gsm']= _tp(f'{key}_hpca_heplus_ion_bulk_velocity')
+        if B_var is None:
+            # fall back to *any* b_gsm_* – often 4-columns (|B| in col-3)
+            B_var = _first_valid_var([f'{key}_fgm_b_gsm_*'])
 
+            if B_var is not None:
+                tB, dB = _tp(B_var)
+                # keep only the first 3 components if there are ≥3
+                if dB.ndim == 2 and dB.shape[1] >= 3:
+                    dB = dB[:, :3]
+                evt[p]['B_gsm'] = _trim_to_match(tB, dB)
+
+            else:
+                # nothing at all found → fabricate NaN placeholder so code runs
+                warnings.warn(f'[WARN] B-field absent for MMS{p}')
+                t_stub = evt[p]['N_tot'][0]
+                evt[p]['B_gsm'] = (
+                    t_stub,
+                    np.full((len(t_stub), 3), np.nan)
+                )
+        else:
+            evt[p]['B_gsm'] = _tp(B_var)
+
+        # --------------------------------------------------------------------
+        # placeholders that depend on B_gsm’s shape (now guaranteed to exist)
+        t_stub          = evt[p]['B_gsm'][0]
+        nan_like_vec    = lambda: np.full_like(evt[p]['B_gsm'][1], np.nan)
+        nan_like_scalar = lambda: np.full_like(evt[p]['N_tot'][1], np.nan)
+
+        # --- electrons (DES) -------------------------------------------------
+        des_nd = _first_valid_var([f'{key}_des_numberdensity_*'])
+        if des_nd:
+            suff = des_nd.split('_')[-1]
+            evt[p]['N_e']     = _tp(des_nd)
+            evt[p]['V_e_gse'] = _tp(f'{key}_des_bulkv_gse_{suff}')
+        else:
+            warnings.warn(f'[WARN] DES moments absent for MMS{p}')
+            evt[p]['N_e']     = (t_stub, nan_like_scalar())   # ← fixed
+            evt[p]['V_e_gse'] = (t_stub, nan_like_vec())      # ← already OK
+
+        # He+
+        he_nd = _first_valid_var([f'{key}_hpca_*heplus*number_density*'])
+        if he_nd:
+            evt[p]['N_he']     = _tp(he_nd)
+            evt[p]['V_he_gsm'] = _tp(he_nd.replace('number_density', 'ion_bulk_velocity'))
+        else:
+            warnings.warn(f'[WARN] HPCA He⁺ moments absent for MMS{p}')
+            evt[p]['N_he']     = (t_stub, nan_like_scalar())
+            evt[p]['V_he_gsm'] = (t_stub, nan_like_vec())
+
+        # EDP
         if include_edp:
-            event[p]['E_gse']  = _tp(f'{key}_edp_dce_gse_{data_rate_fgm}_l2')
-            event[p]['SC_pot'] = _tp(f'{key}_edp_scpot_brst_l2')
+            dce_v = _first_valid_var([f'{key}_edp_dce_*_l2'])
+            evt[p]['E_gse'] = _tp(dce_v) if dce_v else (t_stub, nan_like_vec())
+            pot_v = _first_valid_var([f'{key}_edp_scpot_*_l2'])
+            evt[p]['SC_pot'] = _tp(pot_v) if pot_v else (t_stub, nan_like_scalar())
 
+        # ephemeris
         if include_ephem:
-            event[p]['POS_gsm'] = _tp(f'{key}_defeph_pos')
+            pos_v = _first_valid_var([
+                f'{key}_defeph_pos',
+                f'{key}_mec_r_gse',
+                f'{key}_state_pos_gsm',
+                f'{key}_orbatt_r_gsm'
+            ], expect_cols=3)
+            evt[p]['POS_gsm'] = _tp(pos_v) if pos_v else (t_stub, np.full((len(t_stub), 3), np.nan))
 
-    return event
+        # final length sanity
+        for k, (t_arr, d_arr) in evt[p].items():
+            evt[p][k] = _trim_to_match(t_arr, d_arr)
 
-# -----------------------------------------------------------------------------
-# Helpers – DataFrame conversion & resampling
-# -----------------------------------------------------------------------------
-def to_dataframe(time: np.ndarray,
-                 data: np.ndarray,
-                 columns: List[str]) -> pd.DataFrame:
-    """
-    Build a pandas DataFrame with UTC datetime index (ns resolution).
-    """
-    # Convert TT2000 (ns since 2000-01-01) → pandas datetime64[ns]
-    if np.issubdtype(time.dtype, np.int64) and time.dtype.itemsize == 8:
-        # simple TT2000 converter (accurate to ~1µs)
-        epoch2000 = np.datetime64('2000-01-01T12:00:00')  # noon TT2000 start
-        dt64 = epoch2000 + time.astype('timedelta64[ns]')
-    else:
-        dt64 = time.astype('datetime64[ns]')
-    df = pd.DataFrame(data, index=dt64, columns=columns)
-    df = df[~df.index.isna()]
-    df = df.loc[~df.index.duplicated(keep="first")] # ② drop duplicate stamps
-    return df
+    return evt
 
-def resample(df: pd.DataFrame,
-             cadence: str = '250ms',
-             method: str = 'nearest') -> pd.DataFrame:
-    """
-    Resample DataFrame to regular cadence using pandas.
-    """
-    if method == 'nearest':
-        return df.resample(cadence).nearest()
-    elif method == 'mean':
-        return df.resample(cadence).mean()
-    else:
-        raise ValueError(f'Unknown resample method: {method}')
+# ═══════════════════════ DataFrame + resample utils ═══════════════════════
+def to_dataframe(time: np.ndarray, data: np.ndarray, cols: List[str]) -> pd.DataFrame:
+    is_num = (
+        np.issubdtype(time.dtype, np.integer)  or
+        np.issubdtype(time.dtype, np.unsignedinteger) or
+        np.issubdtype(time.dtype, np.floating)
+    )
+    idx = _tt2000_to_datetime64_ns(time) if is_num else time.astype('datetime64[ns]')
+    df = pd.DataFrame(data, index=pd.DatetimeIndex(idx, name=None), columns=cols)
+    df = df.loc[~df.index.isna()]
+    return df.loc[~df.index.duplicated(keep='first')]
+
+
+def resample(df: pd.DataFrame, cadence: str = '250ms', method: str = 'nearest') -> pd.DataFrame:
+    return df.resample(cadence).nearest() if method == 'nearest' else df.resample(cadence).mean()
