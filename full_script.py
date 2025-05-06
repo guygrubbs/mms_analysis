@@ -1,233 +1,200 @@
-#!/usr/bin/env python
-"""
-MMS magnetopause motion analysis – 27 Jan 2019, 12:00-13:00 UT
-Replicates the IDL workflow in Python (PySPEDAS + Matplotlib).
-
-Author: <your-name>
-Date  : 2025-05-06
-"""
-
 import numpy as np
 from pyspedas import mms
-from pytplot import get_data, tplot_names
+from pytplot import get_data
 import matplotlib.pyplot as plt
-import matplotlib.dates as mdates
 
-# -------------------------------------------------------------------------
-# small helpers
-# -------------------------------------------------------------------------
 def try_get(name):
-    """Return (t, y) if tplot var exists, else (None, None)."""
+    """Return (t, y) if a tplot var exists, else (None, None)."""
     out = get_data(name)
     return out if out is not None else (None, None)
 
-def sec2mpl(seconds):
-    """POSIX seconds → Matplotlib date-float."""
-    return seconds / 86400.0 + mdates.datestr2num('1970-01-01')
-
-# -------------------------------------------------------------------------
-# data loader
-# -------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# revised loader ------------------------------------------------------------
+# ---------------------------------------------------------------------------
 def load_mms_data(trange):
     """
-    Download MEC, FGM and FPI moment data for MMS1-4.
-    Electron bulk-V is optional – analysis doesn’t need it.
-    Returns a dict keyed by 'mms1' … 'mms4'.
+    Download + return MMS MEC, FGM and FPI moment data.
+    Electron bulk V is optional; code keeps running if it’s absent.
     """
-    # download (keep tplot vars)
+    # ---- download (kept in tplot) -----------------------------------------
     mms.mec(trange=trange, probe=['1','2','3','4'],
-            data_rate='srvy', level='l2', notplot=False)
+            data_rate='srvy', level='l2', notplot=False)          # pos
     mms.fgm(trange=trange, probe=['1','2','3','4'],
-            data_rate='srvy', level='l2', notplot=False)
+            data_rate='srvy', level='l2', notplot=False)          # B
     mms.fpi(trange=trange, probe=['1','2','3','4'],
             data_rate='fast', level='l2',
-            datatype=['dis-moms', 'des-moms'], notplot=False)
+            datatype=['dis-moms', 'des-moms'], notplot=False)     # moments
 
+    # ---- collect into python dict ----------------------------------------
     data = {}
     for sc in ['1','2','3','4']:
         sid = f"mms{sc}"
 
-        # position (GSE, km) – epoch seconds
+        # MEC position (GSE, km)
         t_pos, pos = try_get(f"{sid}_mec_r_gse")
         if t_pos is None:
-            raise RuntimeError(f"{sid} MEC variable missing")
+            raise RuntimeError(f"{sid} position var missing – MEC failed to load")
 
-        # magnetic field (GSE, nT)
+        # FGM magnetic field (GSE, nT)
         t_b, B = try_get(f"{sid}_fgm_b_gse_srvy_l2")
         if t_b is None:
-            raise RuntimeError(f"{sid} FGM variable missing")
+            raise RuntimeError(f"{sid} B var missing – FGM failed to load")
 
-        # ion bulk-V (GSE, km/s) – always present in fast moments
+        # Ion bulk V (GSE, km/s) – always present in fast moments
         t_vi, Vi = try_get(f"{sid}_dis_bulkv_gse_fast")
         if t_vi is None:
-            raise RuntimeError(f"{sid} ion bulk-V missing")
+            raise RuntimeError(f"{sid} ion bulk-V missing – DIS moments failed")
 
-        # electron bulk-V – may be absent
-        t_ve, Ve = try_get(f"{sid}_des_bulkv_gse_fast")
+        # Electron bulk V – *may* be absent in fast L2; keep going if so
+        t_ve, Ve = try_get(f"{sid}_des_bulkv_gse_fast")   # may return (None, None)
 
-        # densities (optional)
+        # Densities (optional, for edge picking)
         _, Ni = try_get(f"{sid}_dis_numberdensity_fast")
         _, Ne = try_get(f"{sid}_des_numberdensity_fast")
 
         data[sid] = {
-            'time_pos': t_pos, 'pos': pos,        # km
-            'time_b'  : t_b,   'B'  : B,          # nT
-            'time_vi' : t_vi,  'Vi' : Vi,         # km/s
-            'time_ve' : t_ve,  'Ve' : Ve,         # km/s or None
-            'Ni'      : Ni,    'Ne' : Ne
+            'time_pos': t_pos, 'pos': pos,
+            'time_b': t_b,     'B': B,
+            'time_vi': t_vi,   'Vi': Vi,
+            'time_ve': t_ve,   'Ve': Ve,   # can be None
+            'Ni': Ni, 'Ne': Ne
         }
     return data
 
-# -------------------------------------------------------------------------
-# geometry check – “string-of-pearls”
-# -------------------------------------------------------------------------
+
 def confirm_string_of_pearls(mms_data):
-    ref_time = (mms_data['mms1']['time_pos'][0] +
-                mms_data['mms1']['time_pos'][-1]) / 2
-    ref_pos = {}
-    for sc in ['mms1','mms2','mms3','mms4']:
-        t = mms_data[sc]['time_pos']; r = mms_data[sc]['pos']
-        ref_pos[sc] = np.array([np.interp(ref_time, t, r[:,0]),
-                                np.interp(ref_time, t, r[:,1]),
-                                np.interp(ref_time, t, r[:,2])])
-    rad = {sc: np.linalg.norm(vec)/6371.0 for sc, vec in ref_pos.items()}
-    sep12 = np.linalg.norm(ref_pos['mms1'] - ref_pos['mms2'])
-    sep23 = np.linalg.norm(ref_pos['mms2'] - ref_pos['mms3'])
-    sep34 = np.linalg.norm(ref_pos['mms3'] - ref_pos['mms4'])
-    print("\nString-of-pearls check @~12:30 UT")
-    for sc, r in rad.items():
-        print(f"  {sc.upper()}  {r:.2f} Re")
-    print(f"  separations: 12={sep12:.0f} km  23={sep23:.0f} km  34={sep34:.0f} km\n")
+    # Check radial distances and separations for MMS1-4
+    ref_time = (mms_data['mms1']['time_pos'][0] + mms_data['mms1']['time_pos'][-1]) / 2
+    ref_positions = {}
+    for sc_id in ['mms1','mms2','mms3','mms4']:
+        t = mms_data[sc_id]['time_pos']; pos = mms_data[sc_id]['pos']
+        ref_positions[sc_id] = np.array([np.interp(ref_time, t, pos[:,0]),
+                                         np.interp(ref_time, t, pos[:,1]),
+                                         np.interp(ref_time, t, pos[:,2])])
+    rad_dists = {sc: np.linalg.norm(vec)/6371.0 for sc, vec in ref_positions.items()}
+    sep12 = np.linalg.norm(ref_positions['mms1'] - ref_positions['mms2'])
+    sep23 = np.linalg.norm(ref_positions['mms2'] - ref_positions['mms3'])
+    sep34 = np.linalg.norm(ref_positions['mms3'] - ref_positions['mms4'])
+    print("Radial distance at midpoint (Re):")
+    for sc, r in rad_dists.items():
+        print(f"  {sc.upper()}: {r:.2f} Re")
+    print("Neighbor separations at midpoint (km):")
+    print(f"  MMS1-2: {sep12:.1f} km, MMS2-3: {sep23:.1f} km, MMS3-4: {sep34:.1f} km")
 
-# -------------------------------------------------------------------------
-# Vn computation
-# -------------------------------------------------------------------------
 def compute_normal_velocity(mms_data, normal_vector):
-    N = np.asarray(normal_vector, dtype=float)
-    N /= np.linalg.norm(N)
-    Vn = {}
-    for sc in ['mms1','mms2','mms3','mms4']:
-        vi = mms_data[sc]['Vi']              # shape (N,3)
-        Vn[sc] = {'time_sec': mms_data[sc]['time_vi'],   # seconds
-                  'Vn'      : vi @ N}        # dot product
-    return Vn, N
+    N = np.array(normal_vector, dtype=float); N = N/np.linalg.norm(N)
+    # Pick an arbitrary M perpendicular to N (cross with Z or X)
+    z_hat = np.array([0.0, 0.0, 1.0])
+    if abs(np.dot(N, z_hat)) < 0.99:
+        M = np.cross(N, z_hat)
+    else:
+        M = np.cross(N, np.array([1.0, 0.0, 0.0]))
+    M = M/np.linalg.norm(M)
+    L = np.cross(M, N); L = L/np.linalg.norm(L)
+    Vn_data = {}
+    for sc_id in ['mms1','mms2','mms3','mms4']:
+        vi = mms_data[sc_id]['Vi']; t_vi = mms_data[sc_id]['time_vi']
+        Vn = np.dot(vi, N)
+        Vn_data[sc_id] = {'time': t_vi, 'Vn': Vn}
+    return Vn_data
 
-# -------------------------------------------------------------------------
-# integrate Vn between times
-# -------------------------------------------------------------------------
-def integrate_vn(time_sec, Vn, t_start64, t_end64):
-    t0 = t_start64.astype('datetime64[s]').astype(float)
-    t1 = t_end64  .astype('datetime64[s]').astype(float)
-    mask = (time_sec >= t0) & (time_sec <= t1)
-    if mask.sum() < 2:
+def integrate_boundary_motion(time, Vn, t_start, t_end):
+    # Integrate Vn from t_start to t_end
+    if isinstance(time[0], np.datetime64):
+        time_num = time.astype('datetime64[ns]').astype('int64') * 1e-9
+    else:
+        time_num = time
+    mask = (time_num >= (np.datetime64(t_start).astype('datetime64[ns]').astype('int64')*1e-9)) & \
+           (time_num <= (np.datetime64(t_end).astype('datetime64[ns]').astype('int64')*1e-9))
+    if not np.any(mask):
         return 0.0
-    dt = np.diff(time_sec[mask])
-    return np.sum(0.5*(Vn[mask][:-1] + Vn[mask][1:]) * dt)
+    t_seg = time_num[mask].astype(float)
+    Vn_seg = Vn[mask]
+    dt = np.diff(t_seg)
+    displacement = np.sum((Vn_seg[:-1] + Vn_seg[1:]) / 2 * dt)  # km
+    return displacement
 
-# -------------------------------------------------------------------------
-# continuous distance time-series (0 at ref_time)
-# -------------------------------------------------------------------------
-def distance_series(time_sec, Vn, ref64):
-    dt = np.diff(time_sec)
-    disp = np.concatenate(([0.0],
-                           np.cumsum(0.5*(Vn[:-1] + Vn[1:]) * dt)))
-    ref_sec = ref64.astype('datetime64[s]').astype(float)
-    ref_disp = np.interp(ref_sec, time_sec, disp)
-    return disp - ref_disp   # km
+def compute_distance_time_series(time, Vn, ref_time):
+    # Compute continuous distance profile, with 0 at ref_time
+    if isinstance(time[0], np.datetime64):
+        t_num = time.astype('datetime64[ns]').astype('int64') * 1e-9
+    else:
+        t_num = time.astype(float)
+    t0 = float(t_num[0])
+    t_sec = t_num - t0
+    # Cumulative integral of Vn
+    dist = np.concatenate(([0.0], np.cumsum((Vn[:-1] + Vn[1:]) / 2 * np.diff(t_sec))))
+    # Reference distance at ref_time
+    ref_sec = (np.datetime64(ref_time).astype('datetime64[ns]').astype('int64') * 1e-9) - t0
+    ref_dist = np.interp(ref_sec, t_sec, dist)
+    return dist - ref_dist
 
-# -------------------------------------------------------------------------
-# plotting
-# -------------------------------------------------------------------------
-def plot_distance(dist_data, boundary_times):
+def plot_distance_time_series(distance_series, boundary_times):
     plt.figure(figsize=(10,6))
-    colors  = dict(mms1='tab:red', mms2='tab:blue',
-                   mms3='tab:green', mms4='tab:purple')
-    markers = {'ion_edge':'^', 'curr_sheet':'o', 'electron_edge':'v'}
-
-    for sc, dd in dist_data.items():
-        # x-axis already in POSIX seconds – convert once to Matplotlib dates
-        t_mpl = [mdates.epoch2num(t) for t in dd['time_sec']]
-        plt.plot(t_mpl, dd['dist'], color=colors[sc], label=sc.upper())
-        # annotate edges
-        for edge, mk in markers.items():
-            te64 = boundary_times[sc][edge]
-            te_sec = te64.astype('datetime64[s]').astype(float)
-            d_val  = np.interp(te_sec, dd['time_sec'], dd['dist'])
-            plt.plot(mdates.epoch2num(te_sec), d_val, mk,
-                     color=colors[sc], ms=7)
-
-    plt.axhline(0, ls='--', c='k', lw=0.7)
-    plt.title("MMS magnetopause distance – 27 Jan 2019")
-    plt.ylabel("Distance to MP (km)")
-    plt.xlabel("Universal Time")
-    plt.gca().xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
-    plt.legend()
-    plt.tight_layout()
+    colors = {'mms1':'tab:red', 'mms2':'tab:blue', 'mms3':'tab:green', 'mms4':'tab:purple'}
+    markers = {'ion_edge': '^', 'curr_sheet': 'x', 'electron_edge': 'v'}
+    for sc_id, data in distance_series.items():
+        t = data['time']; dist = data['distance']; c = colors[sc_id]
+        plt.plot(t, dist, label=sc_id.upper(), color=c)
+        # Mark ion edge, current sheet, electron edge
+        for edge, m in markers.items():
+            t_edge = boundary_times[sc_id][edge]
+            # interpolate distance at t_edge:
+            t_edge_num = np.datetime64(t_edge).astype('datetime64[ns]').astype('int64') * 1e-9
+            t_num = t.astype('datetime64[ns]').astype('int64') * 1e-9
+            d_edge = np.interp(t_edge_num, t_num, dist)
+            plt.scatter(t_edge, d_edge, marker=m, color=c, edgecolors='k', zorder=5)
+    plt.axhline(0, color='k', linestyle='--', linewidth=0.8)
+    plt.title("MMS Magnetopause Distance (2019-01-27 12:00-13:00 UT)")
+    plt.xlabel("Time (UT)")
+    plt.ylabel("Distance to Magnetopause (km)")
+    plt.legend(loc='upper left')
+    plt.grid(True)
+    plt.gcf().autofmt_xdate()
     plt.savefig("MMS_magnetopause_distance_20190127.png", dpi=150)
     plt.show()
 
-# -------------------------------------------------------------------------
-# MAIN
-# -------------------------------------------------------------------------
-if __name__ == "__main__":
-    trange = ['2019-01-27/12:00:00', '2019-01-27/13:00:00']
-    mms_data = load_mms_data(trange)
-    confirm_string_of_pearls(mms_data)
-
-    normal_vec = [0.98, -0.05, 0.18]
-    Vn_data, N = compute_normal_velocity(mms_data, normal_vec)
-
-    # boundary times (update with precise picks)
-    boundary_times = {
-        'mms1': {'ion_edge':'2019-01-27T12:23:05', 'curr_sheet':'2019-01-27T12:23:12',
-                 'electron_edge':'2019-01-27T12:23:18'},
-        'mms2': {'ion_edge':'2019-01-27T12:24:15', 'curr_sheet':'2019-01-27T12:24:22',
-                 'electron_edge':'2019-01-27T12:24:29'},
-        'mms3': {'ion_edge':'2019-01-27T12:25:25', 'curr_sheet':'2019-01-27T12:25:33',
-                 'electron_edge':'2019-01-27T12:25:40'},
-        'mms4': {'ion_edge':'2019-01-27T12:26:35', 'curr_sheet':'2019-01-27T12:26:43',
-                 'electron_edge':'2019-01-27T12:26:50'}
+# Main execution
+trange = ['2019-01-27/12:00:00', '2019-01-27/13:00:00']
+mms_data = load_mms_data(trange)
+confirm_string_of_pearls(mms_data)
+# Define normal (LMN) - given
+normal_vector = [0.98, -0.05, 0.18]
+Vn_data = compute_normal_velocity(mms_data, normal_vector)
+# Define boundary crossing times (manually identified from data)
+boundary_times = {
+    'mms1': {'ion_edge': np.datetime64('2019-01-27T12:23:05'), 'curr_sheet': np.datetime64('2019-01-27T12:23:12'), 'electron_edge': np.datetime64('2019-01-27T12:23:18')},
+    'mms2': {'ion_edge': np.datetime64('2019-01-27T12:24:15'), 'curr_sheet': np.datetime64('2019-01-27T12:24:22'), 'electron_edge': np.datetime64('2019-01-27T12:24:29')},
+    'mms3': {'ion_edge': np.datetime64('2019-01-27T12:25:25'), 'curr_sheet': np.datetime64('2019-01-27T12:25:33'), 'electron_edge': np.datetime64('2019-01-27T12:25:40')},
+    'mms4': {'ion_edge': np.datetime64('2019-01-27T12:26:35'), 'curr_sheet': np.datetime64('2019-01-27T12:26:43'), 'electron_edge': np.datetime64('2019-01-27T12:26:50')}
+}
+# Compute boundary thickness via Vn integration for each spacecraft
+for sc_id in ['mms1','mms2','mms3','mms4']:
+    t_arr = Vn_data[sc_id]['time']; vn_arr = Vn_data[sc_id]['Vn']
+    t_i = boundary_times[sc_id]['ion_edge']; t_e = boundary_times[sc_id]['electron_edge']
+    disp = integrate_boundary_motion(t_arr, vn_arr, t_i, t_e)
+    print(f"{sc_id.upper()} boundary layer thickness ~ {disp:.0f} km")
+# Estimate global normal velocity from MMS1 vs MMS4 timing
+t1 = boundary_times['mms1']['curr_sheet']; t4 = boundary_times['mms4']['curr_sheet']
+pos1 = mms_data['mms1']['pos'][-1]  # using last position as approx at crossing (or interpolate)
+pos4 = mms_data['mms4']['pos'][-1]
+N = np.array(normal_vector); N = N/np.linalg.norm(N)
+delta_d = np.dot((pos4 - pos1), N)
+dt = (t4 - t1) / np.timedelta64(1, 's')
+Vn_global = delta_d / dt
+print(f"Global boundary normal speed ~ {Vn_global:.1f} km/s based on MMS1-4 timing")
+# Predict crossing for MMS2, MMS3
+for sc_id in ['mms2','mms3']:
+    pos_sc = mms_data[sc_id]['pos'][-1]
+    delta_d_sc = np.dot((pos_sc - pos1), N)
+    t_pred = t1 + np.timedelta64(int(delta_d_sc / Vn_global * 1000), 'ms')
+    t_obs = boundary_times[sc_id]['curr_sheet']
+    print(f"{sc_id.upper()} predicted CS time ~ {t_pred} vs observed ~ {t_obs}")
+# Compute and plot distance profiles
+distance_series = {}
+for sc_id in ['mms1','mms2','mms3','mms4']:
+    distance_series[sc_id] = {
+        'time': Vn_data[sc_id]['time'],
+        'distance': compute_distance_time_series(Vn_data[sc_id]['time'], Vn_data[sc_id]['Vn'], boundary_times[sc_id]['curr_sheet'])
     }
-    for sc, times in boundary_times.items():
-        for k in times:
-            boundary_times[sc][k] = np.datetime64(times[k])
-
-    # thickness via Vn integration
-    for sc in ['mms1','mms2','mms3','mms4']:
-        dx = integrate_vn(Vn_data[sc]['time_sec'], Vn_data[sc]['Vn'],
-                          boundary_times[sc]['ion_edge'],
-                          boundary_times[sc]['electron_edge'])
-        print(f"{sc.upper()} boundary thickness ≈ {dx:.0f} km")
-
-    # global Vn from MMS1 vs MMS4 (positions at earliest CS epoch)
-    t_cs1 = boundary_times['mms1']['curr_sheet']
-    t_cs4 = boundary_times['mms4']['curr_sheet']
-    def interp_pos(sc, t64):
-        t, r = mms_data[sc]['time_pos'], mms_data[sc]['pos']
-        return np.array([np.interp(t64.astype('datetime64[s]').astype(float), t, r[:,i])
-                         for i in range(3)])
-    pos1 = interp_pos('mms1', t_cs1)
-    pos4 = interp_pos('mms4', t_cs1)          # same epoch!
-    delta_d = np.dot(pos4 - pos1, N)
-    dt_sec  = (t_cs4 - t_cs1) / np.timedelta64(1, 's')
-    Vn_global = delta_d / dt_sec
-    print(f"\nGlobal MP normal speed ≈ {Vn_global:.1f} km/s")
-
-    # predicted CS for MMS2 & MMS3
-    for sc in ['mms2','mms3']:
-        pos_sc = interp_pos(sc, t_cs1)
-        dd_sc  = np.dot(pos_sc - pos1, N)
-        t_pred = t_cs1 + np.timedelta64(int(dd_sc / Vn_global * 1e3), 'ms')
-        print(f"{sc.upper()} predicted CS {t_pred}  vs  observed {boundary_times[sc]['curr_sheet']}")
-
-    # build distance series dict
-    dist_dict = {}
-    for sc in ['mms1','mms2','mms3','mms4']:
-        dist_dict[sc] = {
-            'time_sec': Vn_data[sc]['time_sec'],
-            'dist'    : distance_series(Vn_data[sc]['time_sec'],
-                                        Vn_data[sc]['Vn'],
-                                        boundary_times[sc]['curr_sheet'])
-        }
-
-    plot_distance(dist_dict, boundary_times)
+plot_distance_time_series(distance_series, boundary_times)
