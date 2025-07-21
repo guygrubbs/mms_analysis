@@ -93,8 +93,12 @@ def main() -> None:
         BN = B_lmn[:, 2]
 
         # 2.3 ─ Boundary detection
+        # Get indices for BN interpolation, ensuring they're within bounds
+        bn_indices = np.searchsorted(d['B_gsm'][0], t_grid)
+        bn_indices = np.clip(bn_indices, 0, len(BN) - 1)
+
         layers = boundary.detect_crossings_multi(
-            t_grid, vars_grid['He'], BN[np.searchsorted(d['B_gsm'][0], t_grid)],
+            t_grid, vars_grid['He'], BN[bn_indices],
             good_mask=good['He'])
         xings = boundary.extract_enter_exit(layers, t_grid)
         crossings[p] = xings[0][0] if xings else np.nan
@@ -125,12 +129,40 @@ def main() -> None:
         disp = motion.integrate_disp(d['V_he_gsm'][0], vN)
 
         # 2.5 ─ Layer thickness
-        layer_results[p] = {typ: abs(disp.disp_km[e] - disp.disp_km[s])
-                            for typ, s, e in layers}
+        # Convert layer indices from t_grid to displacement time array
+        layer_results[p] = {}
+        for typ, s, e in layers:
+            # Ensure indices are within bounds for t_grid
+            s = min(s, len(t_grid) - 1)
+            e = min(e, len(t_grid) - 1)
+
+            # Get times and convert to seconds if needed
+            t_start = t_grid[s]
+            t_end = t_grid[e]
+
+            # Convert datetime64 to Unix timestamp if necessary
+            if isinstance(t_start, np.datetime64) or (hasattr(t_start, 'dtype') and np.issubdtype(t_start.dtype, np.datetime64)):
+                # Convert to Unix timestamp (seconds since epoch)
+                t_start = float(t_start.astype('datetime64[s]').astype('int64'))
+                t_end = float(t_end.astype('datetime64[s]').astype('int64'))
+
+            # Find closest indices in displacement time array
+            s_disp = np.searchsorted(disp.t_sec, t_start)
+            e_disp = np.searchsorted(disp.t_sec, t_end)
+
+            # Ensure indices are within bounds
+            s_disp = np.clip(s_disp, 0, len(disp.disp_km) - 1)
+            e_disp = np.clip(e_disp, 0, len(disp.disp_km) - 1)
+
+            layer_results[p][typ] = abs(disp.disp_km[e_disp] - disp.disp_km[s_disp])
 
         # 2.6 ─ Position at crossing
-        idx_pos = np.searchsorted(d['POS_gsm'][0], crossings[p])
-        positions[p] = d['POS_gsm'][1][idx_pos]
+        if not np.isnan(crossings[p]):
+            idx_pos = np.searchsorted(d['POS_gsm'][0], crossings[p])
+            idx_pos = np.clip(idx_pos, 0, len(d['POS_gsm'][1]) - 1)
+            positions[p] = d['POS_gsm'][1][idx_pos]
+        else:
+            positions[p] = np.array([np.nan, np.nan, np.nan])
 
         # 2.7 ─ Quick-look plots
         if args.plot:
@@ -144,10 +176,46 @@ def main() -> None:
                 sigma=disp.sigma_km,
                 title=f'MMS{p} displacement')
 
-    # 3 ── Multi-SC timing
+    # 3 ── Multi-SC timing with operational awareness
     print('[2] Multi-spacecraft boundary normal …')
-    n_hat, V_phase, sigV = multispacecraft.timing_normal(positions, crossings)
-    print(f'    n̂ = {n_hat}   V_ph = {V_phase:.1f} ± {sigV:.1f} km/s')
+
+    # Filter spacecraft based on data quality and crossing validity
+    good_positions = {}
+    good_crossings = {}
+
+    for p in args.probes:
+        # Check data quality
+        if p in evt:
+            # Simple data quality check - could be enhanced
+            b_data = evt[p]['B_gsm'][1]
+            he_data = evt[p]['N_he'][1]
+
+            b_coverage = np.sum(~np.isnan(b_data).any(axis=1)) / len(b_data)
+            he_coverage = np.sum(~np.isnan(he_data)) / len(he_data)
+            overall_quality = (b_coverage + he_coverage) / 2
+
+            print(f'    MMS{p} data quality: {overall_quality:.1%}')
+
+            # Include if quality is reasonable and crossing is valid
+            if overall_quality > 0.3 and p in crossings and not np.isnan(crossings[p]):
+                good_positions[p] = positions[p]
+                good_crossings[p] = crossings[p]
+                print(f'    ✅ MMS{p} included in timing analysis')
+            else:
+                print(f'    ❌ MMS{p} excluded (quality: {overall_quality:.1%}, crossing: {crossings.get(p, "missing")})')
+
+    # Perform timing analysis if we have enough spacecraft
+    if len(good_positions) >= 2:
+        try:
+            n_hat, V_phase, sigV = multispacecraft.timing_normal(good_positions, good_crossings)
+            print(f'    ✅ Timing successful with {len(good_positions)} spacecraft')
+            print(f'    n̂ = {n_hat}   V_ph = {V_phase:.1f} ± {sigV:.1f} km/s')
+        except Exception as e:
+            print(f'    ❌ Timing analysis failed: {e}')
+            n_hat, V_phase, sigV = np.array([np.nan, np.nan, np.nan]), np.nan, np.nan
+    else:
+        print(f'    ❌ Insufficient spacecraft for timing ({len(good_positions)}/2 minimum)')
+        n_hat, V_phase, sigV = np.array([np.nan, np.nan, np.nan]), np.nan, np.nan
 
     # 4 ── Save JSON / CSV
     out = {
