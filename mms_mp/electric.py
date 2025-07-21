@@ -29,14 +29,99 @@ def exb_velocity(E_xyz: np.ndarray,
                  unit_E: Literal['V/m', 'mV/m'] = 'mV/m',
                  unit_B: Literal['T', 'nT']     = 'nT') -> np.ndarray:
     """
-    v_exb = (E × B) / |B|²    [km s⁻¹]
+    Calculate E×B drift velocity for charged particles in crossed electric and magnetic fields.
 
-    Parameters
-    ----------
-    E_xyz : (N, 3)  electric-field vector
-    B_xyz : (N, 3)  magnetic-field vector
-    unit_E : 'V/m'  or 'mV/m'
-    unit_B : 'T'    or 'nT'
+    The E×B drift is a fundamental plasma physics phenomenon where charged particles
+    drift perpendicular to both electric and magnetic fields with a velocity that is
+    independent of particle charge, mass, and energy. This drift is given by:
+
+        v⃗_E×B = (E⃗ × B⃗) / |B⃗|²
+
+    The direction follows the right-hand rule for the cross product E⃗ × B⃗, and the
+    magnitude is |E|/|B| when E⃗ ⊥ B⃗.
+
+    Args:
+        E_xyz: Electric field vectors in any Cartesian coordinate system.
+            Shape: (N, 3) where N is the number of time points or spatial locations.
+            Each row contains [Ex, Ey, Ez] components.
+            Units: Specified by unit_E parameter (V/m or mV/m).
+
+        B_xyz: Magnetic field vectors in the same coordinate system as E_xyz.
+            Shape: (N, 3) matching E_xyz dimensions.
+            Each row contains [Bx, By, Bz] components.
+            Units: Specified by unit_B parameter (T or nT).
+
+        unit_E: Units of the electric field input.
+            'V/m': Volts per meter (SI units)
+            'mV/m': Millivolts per meter (common in space physics)
+            Default: 'mV/m'
+
+        unit_B: Units of the magnetic field input.
+            'T': Tesla (SI units)
+            'nT': Nanotesla (common in space physics)
+            Default: 'nT'
+
+    Returns:
+        np.ndarray: E×B drift velocity vectors, shape (N, 3).
+            Each row contains [vx, vy, vz] components in km/s.
+            Direction: Perpendicular to both E⃗ and B⃗ following right-hand rule.
+            Magnitude: |E|/|B| when fields are perpendicular.
+
+    Raises:
+        ValueError: If unit_E is not 'V/m' or 'mV/m', or if unit_B is not 'T' or 'nT'.
+
+    Examples:
+        >>> import numpy as np
+        >>> from mms_mp import exb_velocity
+
+        # Simple case: E in +X, B in +Z
+        >>> E = np.array([[1.0, 0.0, 0.0]])  # 1 mV/m in X direction
+        >>> B = np.array([[0.0, 0.0, 1.0]])  # 1 nT in Z direction
+        >>> v_exb = exb_velocity(E, B)
+        >>> print(f"E×B velocity: {v_exb[0]} km/s")  # [0, -1000, 0]
+
+        # Multiple time points
+        >>> n_points = 100
+        >>> E_time = np.column_stack([
+        ...     np.ones(n_points),           # Constant Ex = 1 mV/m
+        ...     0.5 * np.sin(np.linspace(0, 2*np.pi, n_points)),  # Varying Ey
+        ...     np.zeros(n_points)           # Ez = 0
+        ... ])
+        >>> B_time = np.column_stack([
+        ...     np.zeros(n_points),          # Bx = 0
+        ...     np.zeros(n_points),          # By = 0
+        ...     np.ones(n_points) * 50       # Constant Bz = 50 nT
+        ... ])
+        >>> v_exb_time = exb_velocity(E_time, B_time, unit_E='mV/m', unit_B='nT')
+
+        # Using SI units
+        >>> E_SI = np.array([[0.001, 0.0, 0.0]])  # 1 mV/m = 0.001 V/m
+        >>> B_SI = np.array([[0.0, 0.0, 1e-9]])   # 1 nT = 1e-9 T
+        >>> v_exb_SI = exb_velocity(E_SI, B_SI, unit_E='V/m', unit_B='T')
+
+    Notes:
+        - **Physics**: The E×B drift is independent of particle species, making it
+          a bulk plasma motion. All particles (electrons, protons, heavy ions) drift
+          with the same velocity.
+
+        - **Direction**: The drift direction follows the right-hand rule for E⃗ × B⃗.
+          For E⃗ pointing East and B⃗ pointing North, particles drift downward.
+
+        - **Magnitude**: When E⃗ ⊥ B⃗, the drift speed is simply |E|/|B|.
+          For typical magnetospheric values (E ~ 1 mV/m, B ~ 50 nT),
+          this gives v ~ 20 km/s.
+
+        - **Coordinate Systems**: Input vectors should be in the same coordinate
+          system. Common choices include GSM, GSE, or LMN coordinates.
+
+        - **Numerical Stability**: The calculation is stable for typical space
+          physics field magnitudes. Very weak magnetic fields (|B| << 1 nT) may
+          lead to numerical issues.
+
+    References:
+        - Chen, F. F. (2016): Introduction to Plasma Physics and Controlled Fusion
+        - Baumjohann, W. & Treumann, R. A. (1996): Basic Space Plasma Physics
+        - Kivelson, M. G. & Russell, C. T. (1995): Introduction to Space Physics
     """
     # --- unit conversions ------------------------------------------
     if unit_E == 'mV/m':

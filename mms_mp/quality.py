@@ -14,8 +14,8 @@ import numpy as np
 from typing import Dict, Tuple, Iterable, Optional
 # local resample helper
 try:
-    from ..resample import resample as _resample  # inside package
-except ValueError:  # running as script
+    from .resample import resample as _resample  # inside package
+except (ImportError, ValueError):  # running as script
     from resample import resample as _resample
 
 

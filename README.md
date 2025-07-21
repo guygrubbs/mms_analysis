@@ -51,6 +51,7 @@ python -m mms_mp.cli \
 ```
 mms_mp/                 Core package
 │
+├── __init__.py         • Package initialization and imports
 ├── data_loader.py      • CDF download + variable extraction
 ├── coords.py           • LMN transforms (MVA / model / hybrid)
 ├── resample.py         • Multi-var resampling/merging helpers
@@ -61,9 +62,11 @@ mms_mp/                 Core package
 ├── multispacecraft.py  • Timing method (n̂, V_ph) + alignment
 ├── visualize.py        • Publication-ready plotting helpers
 ├── spectra.py          • FPI ion/electron spectrograms
+├── thickness.py        • Layer thickness calculation utilities
 └── cli.py              • Command-line pipeline
 main_analysis.py        Notebook/demo script
-requirements.txt
+requirements.txt        Core dependencies
+pyproject.toml          Package configuration
 README.md
 LICENSE
 ```
@@ -81,6 +84,7 @@ LICENSE
 | `motion`          | `integrate_disp()` supports trapezoid / Simpson; propagates 1-σ if velocity error supplied |
 | `multispacecraft` | SVD timing solver (2–4 SC) returns n̂, Vₚₕ ±σ; `stack_aligned()` builds overlay arrays     |
 | `visualize`       | `summary_single()` (4-panel quick-look), `overlay_multi()`, `plot_displacement()`          |
+| `thickness`       | `layer_thicknesses()` calculates magnetopause layer thickness from displacement data       |
 | `cli`             | Downloads, analyses, saves JSON + CSV + figures; ideal for batch runs / cron jobs          |
 
 ---
@@ -124,10 +128,10 @@ raw CDFs ───▶ │ data_loader  │ ─────▶ │  coords       
 
 | Library              | Purpose                                   |
 | -------------------- | ----------------------------------------- |
-| **pySPEDAS ≥ 1.2**   | Download & read MMS CDFs                  |
-| NumPy, SciPy, pandas | Numerics, resampling, Simpson integration |
-| Matplotlib           | Plots + spectrograms                      |
-| (Optional) tqdm      | Progress bars (not required)              |
+| **pySPEDAS ≥ 1.7.20** | Download & read MMS CDFs                  |
+| NumPy, SciPy, pandas | Numerics, resampling, Simpson integration | (optional) |
+| Matplotlib           | Plots + spectrograms                      | (optional) |
+| (Optional) tqdm      | Progress bars (not required)              | (optional) |
 
 Install everything via:
 

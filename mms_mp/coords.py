@@ -122,11 +122,78 @@ def hybrid_lmn(b_xyz: np.ndarray,
                eig_ratio_thresh: float = 5.0,
                cache_key: Optional[str] = None) -> LMN:
     """
-    Compute an LMN triad using:
+    Compute a hybrid LMN coordinate system for magnetopause boundary analysis.
 
-    1. Classical MVA when λ_max/λ_mid and λ_mid/λ_min ≥ `eig_ratio_thresh`.
-    2. Otherwise, try `pyspedas.lmn_matrix_make` (if available & position given).
-    3. Finally, fall back to Shue outward normal + right-handed completion.
+    This function implements a robust three-step approach to determine the
+    Local-Mean-Normal (LMN) coordinate system for magnetopause boundaries:
+
+    1. **Minimum Variance Analysis (MVA)**: Applied when eigenvalue ratios
+       λ_max/λ_mid and λ_mid/λ_min both exceed the threshold, indicating
+       well-defined variance structure.
+
+    2. **PySPEDAS LMN Matrix**: If MVA fails and spacecraft position is
+       provided, attempts to use pyspedas.lmn_matrix_make as fallback.
+
+    3. **Shue Model Normal**: Final fallback using the Shue et al. (1997)
+       magnetopause model to determine the outward normal direction.
+
+    Args:
+        b_xyz: Magnetic field vectors in GSM coordinates.
+            Shape: (N, 3) where N is the number of time points.
+            Units: Any (typically nT), but should be consistent.
+
+        pos_gsm_km: Spacecraft position in GSM coordinates, optional.
+            Shape: (3,) representing [X, Y, Z] position.
+            Units: km. Required for PySPEDAS fallback and Shue model.
+
+        eig_ratio_thresh: Minimum eigenvalue ratio threshold for MVA acceptance.
+            Default: 5.0. Higher values require more well-defined variance.
+            Typical range: 2.0-10.0.
+
+        cache_key: Optional cache key for repeated calls with same data.
+            If provided, results are cached using LRU cache for performance.
+
+    Returns:
+        LMN: Coordinate system object containing:
+            - L, M, N: Unit vectors defining the coordinate system
+            - R: 3x3 rotation matrix from XYZ to LMN
+            - eigvals: Eigenvalues from MVA (if used)
+            - r_max_mid, r_mid_min: Eigenvalue ratios
+            - method: String indicating which method was used
+
+    Raises:
+        ValueError: If input arrays have incompatible shapes or contain
+                   insufficient valid data points.
+        RuntimeError: If all three methods fail to produce a valid coordinate system.
+
+    Examples:
+        >>> import numpy as np
+        >>> from mms_mp import hybrid_lmn
+
+        # Basic usage with magnetic field data
+        >>> B = np.random.randn(100, 3)  # 100 time points
+        >>> lmn = hybrid_lmn(B)
+        >>> print(f"Method used: {lmn.method}")
+
+        # With spacecraft position for better fallback
+        >>> pos = np.array([10000, 5000, -2000])  # km, GSM
+        >>> lmn = hybrid_lmn(B, pos_gsm_km=pos)
+
+        # Transform vectors to LMN coordinates
+        >>> B_lmn = lmn.to_lmn(B)
+        >>> print(f"Normal component: {B_lmn[:, 2]}")
+
+    Notes:
+        - The L direction corresponds to maximum variance (along current sheet)
+        - The M direction corresponds to intermediate variance
+        - The N direction corresponds to minimum variance (boundary normal)
+        - For magnetopause analysis, N should point from magnetosphere to magnetosheath
+        - Eigenvalue ratios < 2 typically indicate poor MVA conditions
+
+    References:
+        - Sonnerup & Cahill (1967): Magnetopause structure and attitude from Explorer 12
+        - Shue et al. (1997): A new functional form to study the solar wind control
+        - Paschmann & Daly (1998): Analysis Methods for Multi-Spacecraft Data
     """
     if cache_key:          # small LRU cache for repeated calls on same data
         return _cached_hybrid(cache_key,

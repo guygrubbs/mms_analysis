@@ -101,3 +101,16 @@ $RECYCLE.BIN/
 *.bak
 *.tmp
 *.log
+
+############################
+# Package development       #
+############################
+# Test artifacts
+test_basic.py
+# Type checking
+.mypy_cache/
+.dmypy.json
+dmypy.json
+# Linting
+.flake8
+.pylint.d/

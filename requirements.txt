@@ -1,5 +1,11 @@
+# Core dependencies for MMS Magnetopause Analysis Toolkit
 pyspedas>=1.7.20
-numpy
-scipy
-pandas
-matplotlib
+numpy>=1.20.0
+scipy>=1.7.0
+pandas>=1.3.0
+matplotlib>=3.3.0
+
+# Optional dependencies (uncomment as needed)
+# tqdm  # Progress bars for long downloads
+# jupyter  # For notebook examples
+# pytest  # For running tests
