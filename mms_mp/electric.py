@@ -139,7 +139,18 @@ def exb_velocity(E_xyz: np.ndarray,
         raise ValueError("unit_B must be 'T' or 'nT'")
 
     # --- E × B -----------------------------------------------------
-    v_mps  = np.cross(E, B) / np.sum(B**2, axis=1, keepdims=True)
+    # Handle both 1D and 2D arrays
+    if E.ndim == 1 and B.ndim == 1:
+        # Single vector case
+        v_mps = np.cross(E, B) / np.sum(B**2)
+    else:
+        # Array case - ensure 2D
+        E = np.atleast_2d(E)
+        B = np.atleast_2d(B)
+        v_mps = np.cross(E, B) / np.sum(B**2, axis=1, keepdims=True)
+        if v_mps.shape[0] == 1:
+            v_mps = v_mps[0]  # Return 1D if input was 1D
+
     return v_mps * KM_PER_M          # → km s⁻¹
 
 

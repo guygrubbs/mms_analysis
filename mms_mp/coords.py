@@ -55,6 +55,15 @@ class LMN:
         v = vec_xyz[..., :3]
         return (self.R @ v.T).T
 
+    def to_gsm(self, vec_lmn: np.ndarray) -> np.ndarray:
+        """
+        Rotate a vector (or array of vectors) from LMN → GSM.
+        Inverse transformation using R.T (since R is orthogonal).
+        Accepts shapes (3,) or (N, 3) or (N, ≥ 3); extra columns are ignored.
+        """
+        v = vec_lmn[..., :3]
+        return (self.R.T @ v.T).T
+
 
 # =========================================================================== #
 #                   Step 1 — classical minimum-variance                        #
@@ -83,7 +92,14 @@ def _do_mva(b_xyz: np.ndarray) -> LMN:
     # normalise rows (paranoia – should already be unit length)
     R = R / np.linalg.norm(R, axis=1, keepdims=True)
 
-    return LMN(L=R[0], M=R[1], N=R[2], R=R,
+    # Ensure right-handed coordinate system: if L × M · N < 0, flip N
+    L, M, N = R[0], R[1], R[2]
+    cross_LM = np.cross(L, M)
+    if np.dot(cross_LM, N) < 0:
+        N = -N
+        R[2] = N  # Update the rotation matrix
+
+    return LMN(L=L, M=M, N=N, R=R,
                eigvals=tuple(eigvals),
                r_max_mid=eigvals[0] / eigvals[1] if eigvals[1] else np.inf,
                r_mid_min=eigvals[1] / eigvals[2] if eigvals[2] else np.inf)
