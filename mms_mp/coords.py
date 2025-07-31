@@ -136,7 +136,8 @@ def _shue_normal(pos_gsm_km: np.ndarray,
 def hybrid_lmn(b_xyz: np.ndarray,
                pos_gsm_km: Optional[np.ndarray] = None,
                eig_ratio_thresh: float = 5.0,
-               cache_key: Optional[str] = None) -> LMN:
+               cache_key: Optional[str] = None,
+               formation_type: str = "auto") -> LMN:
     """
     Compute a hybrid LMN coordinate system for magnetopause boundary analysis.
 
