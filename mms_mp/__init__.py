@@ -33,6 +33,8 @@ from . import multispacecraft
 from . import visualize
 from . import spectra
 from . import thickness
+from . import formation_detection
+from . import ephemeris
 from . import cli
 
 # Make key functions easily accessible
@@ -43,6 +45,8 @@ from .motion import integrate_disp
 from .multispacecraft import timing_normal
 from .resample import merge_vars
 from .electric import exb_velocity, normal_velocity
+from .formation_detection import detect_formation_type, FormationType, analyze_formation_from_event_data
+from .ephemeris import get_mec_ephemeris_manager, validate_mec_data_usage
 
 __all__ = [
     # Version info
@@ -53,7 +57,7 @@ __all__ = [
     
     # Modules
     "data_loader",
-    "coords", 
+    "coords",
     "resample",
     "electric",
     "quality",
@@ -63,6 +67,8 @@ __all__ = [
     "visualize",
     "spectra",
     "thickness",
+    "formation_detection",
+    "ephemeris",
     "cli",
     
     # Key functions
@@ -75,4 +81,9 @@ __all__ = [
     "merge_vars",
     "exb_velocity",
     "normal_velocity",
+    "detect_formation_type",
+    "FormationType",
+    "analyze_formation_from_event_data",
+    "get_mec_ephemeris_manager",
+    "validate_mec_data_usage",
 ]

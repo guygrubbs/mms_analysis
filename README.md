@@ -84,8 +84,22 @@ LICENSE
 | `motion`          | `integrate_disp()` supports trapezoid / Simpson; propagates 1-σ if velocity error supplied |
 | `multispacecraft` | SVD timing solver (2–4 SC) returns n̂, Vₚₕ ±σ; `stack_aligned()` builds overlay arrays     |
 | `visualize`       | `summary_single()` (4-panel quick-look), `overlay_multi()`, `plot_displacement()`          |
+| `spectra`         | `fpi_ion_spectrogram()`, `fpi_electron_spectrogram()` for energy flux visualization        |
 | `thickness`       | `layer_thicknesses()` calculates magnetopause layer thickness from displacement data       |
 | `cli`             | Downloads, analyses, saves JSON + CSV + figures; ideal for batch runs / cron jobs          |
+
+### Ion and Electron Spectrograms
+
+Generate energy flux spectrograms for the 2019-01-27 magnetopause crossing:
+
+```bash
+python create_mms_spectrograms_2019_01_27.py
+```
+
+**Output files:**
+- `mms_ion_spectrograms_2019_01_27.png` - Ion energy flux (all 4 spacecraft)
+- `mms_electron_spectrograms_2019_01_27.png` - Electron energy flux (all 4 spacecraft)
+- `mms_combined_spectrograms_2019_01_27.png` - Detailed ion/electron comparison
 
 ---
 

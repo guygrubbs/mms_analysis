@@ -34,10 +34,66 @@ def _load(instr: str, rates: List[str], *, trange, probe,
 
 
 def _load_state(trange, probe, *, download_only=False):
-    kw = dict(trange=trange, probe=probe, datatypes='pos', level='def')
-    if download_only:
-        kw['downloadonly'] = True
-    return mms.mms_load_state(**kw)
+    """
+    Load spacecraft ephemeris data - prioritizes MEC over other sources
+
+    MEC (Magnetic Electron and Ion Characteristics) provides the most accurate
+    spacecraft positions and velocities and should be used as the authoritative
+    source for all spacecraft ordering and coordinate transformations.
+    """
+    try:
+        # Primary: Load MEC ephemeris data (most accurate)
+        from pyspedas.projects import mms as mms_pyspedas
+
+        # Load MEC data with specific variable names
+        kw_mec = dict(
+            trange=trange,
+            probe=probe,
+            data_rate='srvy',
+            level='l2',
+            datatype='epht89q',
+            time_clip=True,
+            notplot=False,
+            varnames=[
+                f'mms{probe}_mec_r_gsm',
+                f'mms{probe}_mec_v_gsm',
+                f'mms{probe}_mec_r_gse',
+                f'mms{probe}_mec_v_gse'
+            ]
+        )
+        if download_only:
+            kw_mec['downloadonly'] = True
+
+        result = mms_pyspedas.mms_load_mec(**kw_mec)
+
+        # Verify that MEC variables were actually loaded
+        from pytplot import data_quants
+        mec_vars_loaded = [var for var in data_quants.keys()
+                          if f'mms{probe}_mec' in var and ('r_' in var or 'v_' in var)]
+
+        if len(mec_vars_loaded) > 0:
+            print(f"✅ MEC ephemeris loaded for MMS{probe}: {len(mec_vars_loaded)} variables")
+            # Store the variable names for later use
+            return result
+        else:
+            print(f"⚠️ MEC loading returned success but no variables found for MMS{probe}")
+            print(f"   Available variables: {list(data_quants.keys())}")
+            # Don't raise exception - fall back to other methods
+            raise Exception("No MEC variables loaded")
+
+    except Exception as e:
+        print(f"Warning: MEC ephemeris loading failed for MMS{probe}: {e}")
+        print("Falling back to definitive ephemeris...")
+
+        # Fallback: Try definitive ephemeris
+        try:
+            kw = dict(trange=trange, probe=probe, datatypes='pos', level='def')
+            if download_only:
+                kw['downloadonly'] = True
+            return mms.mms_load_state(**kw)
+        except Exception as e2:
+            print(f"Warning: Definitive ephemeris also failed for MMS{probe}: {e2}")
+            return None
 
 # ───────────────────────── variable discovery ────────────────────────────
 def _is_valid(varname: str, expect_cols: Optional[int] = None) -> bool:
@@ -222,15 +278,43 @@ def load_event(
             pot_v = _first_valid_var([f'{key}_edp_scpot_*_l2'])
             evt[p]['SC_pot'] = _tp(pot_v) if pot_v else (t_stub, nan_like_scalar())
 
-        # ephemeris
+        # ephemeris - prioritize MEC as authoritative source
         if include_ephem:
+            # Priority order: MEC (most accurate) -> definitive -> state -> orbit attitude
             pos_v = _first_valid_var([
-                f'{key}_defeph_pos',
-                f'{key}_mec_r_gse',
-                f'{key}_state_pos_gsm',
-                f'{key}_orbatt_r_gsm'
+                f'{key}_mec_r_gsm',      # MEC GSM position (primary)
+                f'{key}_mec_r_gse',      # MEC GSE position (backup)
+                f'{key}_defeph_pos',     # Definitive ephemeris
+                f'{key}_state_pos_gsm',  # State position
+                f'{key}_orbatt_r_gsm'    # Orbit attitude
             ], expect_cols=3)
-            evt[p]['POS_gsm'] = _tp(pos_v) if pos_v else (t_stub, np.full((len(t_stub), 3), np.nan))
+
+            # Also try to get velocity from MEC (for formation analysis)
+            vel_v = _first_valid_var([
+                f'{key}_mec_v_gsm',      # MEC GSM velocity (primary)
+                f'{key}_mec_v_gse',      # MEC GSE velocity (backup)
+                f'{key}_defeph_vel',     # Definitive velocity
+                f'{key}_state_vel_gsm'   # State velocity
+            ], expect_cols=3)
+
+            # Convert MEC data from m to km if needed
+            if pos_v:
+                times, pos_data = _tp(pos_v)
+                # MEC data is typically in km already, but check units
+                if np.max(np.abs(pos_data)) > 100000:  # If values > 100,000, likely in m
+                    pos_data = pos_data / 1000.0  # Convert m to km
+                evt[p]['POS_gsm'] = (times, pos_data)
+            else:
+                evt[p]['POS_gsm'] = (t_stub, np.full((len(t_stub), 3), np.nan))
+
+            if vel_v:
+                times, vel_data = _tp(vel_v)
+                # MEC velocity is typically in km/s already, but check units
+                if np.max(np.abs(vel_data)) > 100:  # If values > 100, likely in m/s
+                    vel_data = vel_data / 1000.0  # Convert m/s to km/s
+                evt[p]['VEL_gsm'] = (times, vel_data)
+            else:
+                evt[p]['VEL_gsm'] = (t_stub, np.full((len(t_stub), 3), np.nan))
 
         # final length sanity
         for k, (t_arr, d_arr) in evt[p].items():

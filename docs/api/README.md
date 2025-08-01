@@ -15,7 +15,7 @@ Complete documentation of all modules, classes, and functions in the MMS Magneto
 | [`multispacecraft`](multispacecraft.md) | Timing analysis | `timing_normal()`, `stack_aligned()` |
 | [`visualize`](visualize.md) | Plotting utilities | `summary_single()`, `overlay_multi()` |
 | [`quality`](quality.md) | Data quality assessment | Quality flag handling |
-| [`spectra`](spectra.md) | Spectrograms | FPI ion/electron spectrograms |
+| [`spectra`](spectra.md) | Energy spectrograms | `fpi_ion_spectrogram()`, `fpi_electron_spectrogram()` |
 | [`cli`](cli.md) | Command-line interface | Batch processing |
 
 ## Quick Reference
