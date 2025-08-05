@@ -1,116 +1,80 @@
-# ------------------------------------------------------------
-# Python / MMS Magnetopause Toolkit  •  .gitignore
-# ------------------------------------------------------------
+# MMS Data Files (Local Cache Only - Do Not Sync to GitHub)
+pydata/
+*.cdf
+*.h5
+*.hdf5
+*.nc
+*.dat
 
-############################
-# Core Python               #
-############################
-*.pyc
-*.pyo
-*.pyd
+# Python Cache
 __pycache__/
+*.py[cod]
+*$py.class
 *.so
-*.dylib
-
-############################
-# Virtual-env & tooling     #
-############################
-# generic venv / conda / pipenv
-.venv/
-venv/
-env/
-ENV/
-.conda/
-# poetry
-.poetry/
-# pipenv lock
-Pipfile.lock
-
-############################
-# Build / dist / egg        #
-############################
+.Python
 build/
+develop-eggs/
 dist/
-*.egg-info/
+downloads/
+eggs/
 .eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
 *.egg
-# wheelhouse
-wheelhouse/
+MANIFEST
 
-############################
-# IDE / editor metadata     #
-############################
+# PyTorch/ML Models
+*.pth
+*.pkl
+*.model
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# Environment
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# IDE
 .vscode/
 .idea/
 *.swp
 *.swo
 *~
 
-############################
-# Testing & coverage        #
-############################
-.pytest_cache/
-.tox/
-.coverage
-htmlcov/
-nosetests.xml
-coverage.xml
-
-############################
-# Jupyter / notebooks       #
-############################
-.ipynb_checkpoints/
-*.ipynb
-
-############################
-# Data & large binaries     #
-############################
-# local CDAWeb / pySPEDAS cache
-.pyspedas/
-# raw CDFs downloaded manually
-*.cdf
-*.CDF
-# large binary checkpoints
-*.h5
-*.nc
-
-############################
-# Output folders            #
-############################
-results/
-figures/
-logs/
-pydata/
-
-############################
-# OS-specific clutter       #
-############################
+# OS
 .DS_Store
-Thumbs.db
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
 ehthumbs.db
-desktop.ini
-$RECYCLE.BIN/
+Thumbs.db
 
-############################
-# Archives & temp files     #
-############################
-*.tar
-*.tar.gz
-*.tgz
-*.zip
-*.bak
+# Results that are regenerated
+results_*/
+*.png
+*.jpg
+*.jpeg
+*.pdf
+*.eps
+
+# Temporary files
 *.tmp
+*.temp
 *.log
 
-############################
-# Package development       #
-############################
-# Test artifacts
-test_basic.py
-# Type checking
-.mypy_cache/
-.dmypy.json
-dmypy.json
-# Linting
-.flake8
-.pylint.d/
+# Test outputs
+test_report.json
+validation_report.json
