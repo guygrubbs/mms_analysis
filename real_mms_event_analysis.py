@@ -20,6 +20,8 @@ Event Details:
 """
 
 import numpy as np
+import matplotlib
+matplotlib.use('Agg')  # Use non-interactive backend
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 from datetime import datetime, timedelta
@@ -37,9 +39,9 @@ def load_real_mms_event():
     
     print("📡 Loading REAL MMS data for 2019-01-27 12:30:50 UT event...")
     
-    # Define time range: 2 hours around the event
+    # Define focused time range: 20 minutes around the event for efficient processing
     event_time = '2019-01-27/12:30:50'
-    trange = ['2019-01-27/11:30:00', '2019-01-27/13:30:00']
+    trange = ['2019-01-27/12:20:00', '2019-01-27/12:40:00']
     probes = ['1', '2', '3', '4']
     
     print(f"   Time range: {trange[0]} to {trange[1]}")
@@ -48,13 +50,14 @@ def load_real_mms_event():
     
     try:
         # Load actual MMS data using the data_loader module
+        # Focus on burst mode data for highest resolution around the event
         evt = data_loader.load_event(
             trange=trange,
             probes=probes,
-            data_rate_fgm='fast',      # Fast cadence FGM (8 Hz)
-            data_rate_fpi='fast',      # Fast cadence FPI (4.5 s)
+            data_rate_fgm='brst',      # Burst mode FGM (128 Hz) for highest resolution
+            data_rate_fpi='brst',      # Burst mode FPI (0.15 s) for highest resolution
             data_rate_hpca='fast',     # Fast cadence HPCA (10 s)
-            include_brst=True,         # Include burst mode if available
+            include_brst=True,         # Include burst mode data
             include_edp=True,          # Include electric field data
             include_ephem=True,        # Include spacecraft positions (MEC)
             download_only=False        # Load data into memory
@@ -183,17 +186,38 @@ def analyze_magnetic_field(evt, probe='1'):
             else:
                 raise KeyError("No magnetic field data found")
         
-        # Get spacecraft position for LMN context
-        if 'pos_gsm' in evt[probe]:
+        # Get spacecraft position for LMN context (MEC data is stored as 'POS_gsm')
+        if 'POS_gsm' in evt[probe]:
+            _, positions = evt[probe]['POS_gsm']
+            reference_position = positions[len(positions)//2]  # Middle of time series
+        elif 'pos_gsm' in evt[probe]:
             _, positions = evt[probe]['pos_gsm']
             reference_position = positions[len(positions)//2]  # Middle of time series
         else:
-            # Use typical magnetopause position
+            # Should not happen if MEC data loaded correctly
+            print(f"   ⚠️ No position data found for MMS{probe}, available keys: {list(evt[probe].keys())}")
             reference_position = np.array([67000.0, 20000.0, 11000.0])  # ~11 RE
         
         print(f"   Magnetic field points: {len(times):,}")
-        print(f"   Time range: {len(times) * 0.125:.1f} seconds")
-        print(f"   Reference position: [{reference_position[0]/1000:.1f}, {reference_position[1]/1000:.1f}, {reference_position[2]/1000:.1f}] km")
+
+        # Calculate time span safely
+        if hasattr(times[0], 'astype'):  # numpy datetime64
+            time_span = (times[-1] - times[0]) / np.timedelta64(1, 's')
+        else:  # timestamp format
+            time_span = times[-1] - times[0]
+
+        data_rate = len(times) / time_span if time_span > 0 else 0
+        print(f"   Time range: {time_span:.1f} seconds")
+        print(f"   Data cadence: {data_rate:.1f} Hz")
+
+        # Check if position data is valid
+        if not np.isnan(reference_position).any():
+            print(f"   ✅ Using real MEC position: [{reference_position[0]:.1f}, {reference_position[1]:.1f}, {reference_position[2]:.1f}] km")
+        else:
+            # Use realistic position for this event
+            RE_km = 6371.0
+            reference_position = np.array([10.5, 3.2, 1.8]) * RE_km
+            print(f"   ⚠️ Using fallback position: [{reference_position[0]:.1f}, {reference_position[1]:.1f}, {reference_position[2]:.1f}] km")
         
         # Perform LMN analysis
         lmn_system = coords.hybrid_lmn(B_field, pos_gsm_km=reference_position)
@@ -338,6 +362,18 @@ def perform_boundary_detection(magnetic_data, plasma_data):
         print(f"   BN threshold: {cfg.BN_tol:.1f} nT")
         print(f"   Boundary crossings detected: {boundary_crossings}")
         print(f"   Time in magnetosphere: {np.sum(boundary_states)/len(boundary_states)*100:.1f}%")
+
+        # Focus on event time window for detailed analysis
+        event_time = np.datetime64('2019-01-27T12:30:50')
+        if hasattr(density_times[0], 'astype'):  # numpy datetime64
+            time_mask = np.abs(density_times - event_time) <= np.timedelta64(5, 'm')
+        else:  # timestamp or other format
+            event_timestamp = event_time.astype('datetime64[s]').astype(float)
+            time_mask = np.abs(np.array(density_times) - event_timestamp) <= 300  # 5 minutes
+
+        if np.any(time_mask):
+            event_crossings = np.sum(np.diff(boundary_states[time_mask]) != 0)
+            print(f"   Event window (±5 min): {event_crossings} crossings")
         
         return {
             'boundary_states': boundary_states,
@@ -366,8 +402,8 @@ def analyze_spacecraft_formation(evt):
 
         for probe in ['1', '2', '3', '4']:
             if probe in evt:
-                # Try different position variable names
-                pos_vars = ['pos_gsm', 'mec_r_gsm', 'r_gsm', 'position']
+                # Try different position variable names (MEC data is stored as 'POS_gsm')
+                pos_vars = ['POS_gsm', 'pos_gsm', 'mec_r_gsm', 'r_gsm', 'position']
                 pos_data = None
 
                 for var in pos_vars:
@@ -376,21 +412,27 @@ def analyze_spacecraft_formation(evt):
                         break
 
                 if pos_data is not None:
-                    # Use middle position
-                    positions[probe] = pos_data[len(pos_data)//2]
-                    position_found = True
-                else:
-                    # Use realistic fallback position for tetrahedral formation
+                    # Use middle position and check if it's valid
+                    mid_pos = pos_data[len(pos_data)//2]
+                    if not np.isnan(mid_pos).any():
+                        positions[probe] = mid_pos
+                        position_found = True
+                        print(f"   ✅ Using real MEC position for MMS{probe}: [{mid_pos[0]:.1f}, {mid_pos[1]:.1f}, {mid_pos[2]:.1f}] km")
+                    else:
+                        print(f"   ⚠️ MEC position data contains NaN for MMS{probe}")
+                        pos_data = None  # Force fallback
+                if pos_data is None:
+                    # Use realistic fallback position for string formation (2019-01-27 event)
                     RE_km = 6371.0
                     base_pos = np.array([10.5, 3.2, 1.8]) * RE_km
                     if probe == '1':
                         pos_offset = np.array([0.0, 0.0, 0.0])
                     elif probe == '2':
-                        pos_offset = np.array([100.0, 0.0, 0.0])
+                        pos_offset = np.array([25.0, 0.0, 0.0])
                     elif probe == '3':
-                        pos_offset = np.array([50.0, 86.6, 0.0])
+                        pos_offset = np.array([50.0, 0.0, 0.0])
                     else:  # probe == '4'
-                        pos_offset = np.array([50.0, 28.9, 81.6])
+                        pos_offset = np.array([75.0, 0.0, 0.0])
 
                     positions[probe] = base_pos + pos_offset
                     print(f"   ⚠️ Using fallback position for MMS{probe}")
@@ -428,7 +470,7 @@ def analyze_spacecraft_formation(evt):
         
         # Simulate timing analysis (would need actual crossing times from data)
         print(f"   Timing analysis capability: Ready")
-        print(f"   Formation type: {'Tetrahedral' if formation_volume > 50000 else 'String-like'}")
+        print(f"   Formation type: {'Tetrahedral' if formation_volume > 10000 else 'String'}")
         
         return {
             'positions': positions,
@@ -444,14 +486,19 @@ def analyze_spacecraft_formation(evt):
 
 
 def create_comprehensive_plots(magnetic_data, plasma_data, boundary_data, formation_data):
-    """Create comprehensive plots for the real MMS event"""
+    """Create comprehensive plots for the real MMS event focused on event window"""
 
     print(f"\n📊 Creating comprehensive plots...")
 
     try:
+        # Check if we have magnetic data
+        if magnetic_data is None:
+            print("   ⚠️ No magnetic field data available for plotting")
+            return False
+
         # Create multi-panel overview plot
         fig, axes = plt.subplots(6, 1, figsize=(14, 12), sharex=True)
-        fig.suptitle('Real MMS Event Analysis: 2019-01-27 12:30:50 UT\nActual Mission Data',
+        fig.suptitle('Real MMS Event Analysis: 2019-01-27 12:30:50 UT\nFocused 20-Minute Window - Actual Mission Data',
                      fontsize=16, fontweight='bold')
 
         times = magnetic_data['times']
@@ -463,12 +510,16 @@ def create_comprehensive_plots(magnetic_data, plasma_data, boundary_data, format
         else:
             times_dt = times
 
+        # Event time for highlighting
+        event_time = datetime(2019, 1, 27, 12, 30, 50)
+
         # Plot 1: Magnetic field components
         B_field = magnetic_data['B_field']
         axes[0].plot(times_dt, B_field[:, 0], 'b-', label='Bx', linewidth=1)
         axes[0].plot(times_dt, B_field[:, 1], 'g-', label='By', linewidth=1)
         axes[0].plot(times_dt, B_field[:, 2], 'm-', label='Bz', linewidth=1)
         axes[0].plot(times_dt, magnetic_data['B_magnitude'], 'k-', label='|B|', linewidth=1.5)
+        axes[0].axvline(event_time, color='red', linestyle='--', alpha=0.7, label='Event')
         axes[0].set_ylabel('B (nT)')
         axes[0].legend(ncol=4)
         axes[0].grid(True, alpha=0.3)
@@ -479,6 +530,8 @@ def create_comprehensive_plots(magnetic_data, plasma_data, boundary_data, format
         axes[1].plot(times_dt, B_lmn[:, 0], 'b-', label='BL', linewidth=1)
         axes[1].plot(times_dt, B_lmn[:, 1], 'g-', label='BM', linewidth=1)
         axes[1].plot(times_dt, B_lmn[:, 2], 'm-', label='BN', linewidth=1)
+        axes[1].axvline(event_time, color='red', linestyle='--', alpha=0.7, label='Event')
+        axes[1].axhline(0, color='gray', linestyle='-', alpha=0.5)
         axes[1].set_ylabel('B_LMN (nT)')
         axes[1].legend(ncol=3)
         axes[1].grid(True, alpha=0.3)
@@ -493,6 +546,7 @@ def create_comprehensive_plots(magnetic_data, plasma_data, boundary_data, format
                 times_ni_dt = times_ni
 
             axes[2].plot(times_ni_dt, plasma_data['ion_density'], 'purple', linewidth=1.5, label='Ion Density')
+            axes[2].axvline(event_time, color='red', linestyle='--', alpha=0.7, label='Event')
             axes[2].set_ylabel('Ni (cm⁻³)')
             axes[2].legend()
             axes[2].grid(True, alpha=0.3)
@@ -510,6 +564,7 @@ def create_comprehensive_plots(magnetic_data, plasma_data, boundary_data, format
             boundary_states = boundary_data['boundary_states']
             axes[3].fill_between(density_times_dt, 0, boundary_states, alpha=0.6,
                                 color='lightblue', label='Magnetosphere')
+            axes[3].axvline(event_time, color='red', linestyle='--', alpha=0.7, label='Event')
             axes[3].set_ylabel('Region')
             axes[3].set_ylim(-0.1, 1.1)
             axes[3].set_yticks([0, 1])
@@ -548,7 +603,7 @@ def create_comprehensive_plots(magnetic_data, plasma_data, boundary_data, format
 
         plt.tight_layout()
         plt.savefig('real_mms_2019_01_27_comprehensive_analysis.png', dpi=300, bbox_inches='tight')
-        plt.show()
+        plt.close()  # Close figure to free memory
 
         # Create formation plot if data available
         if formation_data:
@@ -625,7 +680,7 @@ def create_formation_plot(formation_data):
 
         plt.tight_layout()
         plt.savefig('real_mms_2019_01_27_formation.png', dpi=300, bbox_inches='tight')
-        plt.show()
+        plt.close()  # Close figure to free memory
 
     except Exception as e:
         print(f"   ⚠️ Formation plot failed: {e}")

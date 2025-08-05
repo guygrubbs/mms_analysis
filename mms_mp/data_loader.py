@@ -300,18 +300,16 @@ def load_event(
             # Convert MEC data from m to km if needed
             if pos_v:
                 times, pos_data = _tp(pos_v)
-                # MEC data is typically in km already, but check units
-                if np.max(np.abs(pos_data)) > 100000:  # If values > 100,000, likely in m
-                    pos_data = pos_data / 1000.0  # Convert m to km
+                # MEC data is already in km - do NOT convert
+                # (Previous logic was incorrect - MEC positions can be > 100,000 km at apogee)
                 evt[p]['POS_gsm'] = (times, pos_data)
             else:
                 evt[p]['POS_gsm'] = (t_stub, np.full((len(t_stub), 3), np.nan))
 
             if vel_v:
                 times, vel_data = _tp(vel_v)
-                # MEC velocity is typically in km/s already, but check units
-                if np.max(np.abs(vel_data)) > 100:  # If values > 100, likely in m/s
-                    vel_data = vel_data / 1000.0  # Convert m/s to km/s
+                # MEC velocity is already in km/s - do NOT convert
+                # (Typical orbital velocities are ~3-8 km/s, which is < 100)
                 evt[p]['VEL_gsm'] = (times, vel_data)
             else:
                 evt[p]['VEL_gsm'] = (t_stub, np.full((len(t_stub), 3), np.nan))

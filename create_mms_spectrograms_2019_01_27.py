@@ -23,6 +23,8 @@ Period: 12:25:00 - 12:35:00 UT (10 minutes around crossing)
 """
 
 import numpy as np
+import matplotlib
+matplotlib.use('Agg')  # Use non-interactive backend
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 from datetime import datetime, timedelta
@@ -230,8 +232,8 @@ def create_ion_spectrograms(flux_data: Dict, save_path: str = 'mms_ion_spectrogr
     
     plt.tight_layout()
     plt.savefig(save_path, dpi=300, bbox_inches='tight')
-    plt.show()
-    
+    plt.close()  # Close figure to free memory
+
     print(f"   ✅ Ion spectrograms saved: {save_path}")
 
 
@@ -274,8 +276,8 @@ def create_electron_spectrograms(flux_data: Dict, save_path: str = 'mms_electron
     
     plt.tight_layout()
     plt.savefig(save_path, dpi=300, bbox_inches='tight')
-    plt.show()
-    
+    plt.close()  # Close figure to free memory
+
     print(f"   ✅ Electron spectrograms saved: {save_path}")
 
 
@@ -330,7 +332,7 @@ def create_combined_spectrograms(flux_data: Dict, save_path: str = 'mms_combined
 
     plt.tight_layout()
     plt.savefig(save_path, dpi=300, bbox_inches='tight')
-    plt.show()
+    plt.close()  # Close figure to free memory
 
     print(f"   ✅ Combined spectrograms saved: {save_path}")
 
