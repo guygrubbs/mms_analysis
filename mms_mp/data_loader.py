@@ -43,28 +43,19 @@ def _load_state(trange, probe, *, download_only=False):
     """
     try:
         # Primary: Load MEC ephemeris data (most accurate)
-        from pyspedas.projects import mms as mms_pyspedas
-
-        # Load MEC data with specific variable names
+        # Use the standard mms.mms_load_mec function which works reliably
         kw_mec = dict(
             trange=trange,
             probe=probe,
             data_rate='srvy',
             level='l2',
             datatype='epht89q',
-            time_clip=True,
-            notplot=False,
-            varnames=[
-                f'mms{probe}_mec_r_gsm',
-                f'mms{probe}_mec_v_gsm',
-                f'mms{probe}_mec_r_gse',
-                f'mms{probe}_mec_v_gse'
-            ]
+            time_clip=True
         )
         if download_only:
             kw_mec['downloadonly'] = True
 
-        result = mms_pyspedas.mms_load_mec(**kw_mec)
+        result = mms.mms_load_mec(**kw_mec)
 
         # Verify that MEC variables were actually loaded
         from pytplot import data_quants
@@ -73,11 +64,11 @@ def _load_state(trange, probe, *, download_only=False):
 
         if len(mec_vars_loaded) > 0:
             print(f"✅ MEC ephemeris loaded for MMS{probe}: {len(mec_vars_loaded)} variables")
-            # Store the variable names for later use
+            print(f"   Variables: {mec_vars_loaded}")
             return result
         else:
             print(f"⚠️ MEC loading returned success but no variables found for MMS{probe}")
-            print(f"   Available variables: {list(data_quants.keys())}")
+            print(f"   Available variables: {[v for v in data_quants.keys() if f'mms{probe}' in v]}")
             # Don't raise exception - fall back to other methods
             raise Exception("No MEC variables loaded")
 
@@ -281,37 +272,90 @@ def load_event(
         # ephemeris - prioritize MEC as authoritative source
         if include_ephem:
             # Priority order: MEC (most accurate) -> definitive -> state -> orbit attitude
-            pos_v = _first_valid_var([
+            # Check for actual MEC variable names that get loaded
+            pos_patterns = [
                 f'{key}_mec_r_gsm',      # MEC GSM position (primary)
                 f'{key}_mec_r_gse',      # MEC GSE position (backup)
+                f'{key}_mec_pos_gsm',    # Alternative MEC naming
+                f'{key}_mec_pos_gse',    # Alternative MEC naming
                 f'{key}_defeph_pos',     # Definitive ephemeris
                 f'{key}_state_pos_gsm',  # State position
                 f'{key}_orbatt_r_gsm'    # Orbit attitude
-            ], expect_cols=3)
+            ]
+
+            print(f"   🔍 Searching for position variables for MMS{p}:")
+            print(f"      Patterns: {pos_patterns}")
+            available_vars = [v for v in data_quants.keys() if key in v]
+            print(f"      Available {key} variables: {available_vars}")
+
+            # Check specifically for MEC variables
+            mec_vars = [v for v in data_quants.keys() if f'{key}_mec' in v]
+            print(f"      MEC variables in data_quants: {mec_vars}")
+
+            pos_v = _first_valid_var(pos_patterns, expect_cols=3)
+            print(f"      Found position variable: {pos_v}")
+
+            # If standard search failed, try direct MEC access
+            if pos_v is None:
+                # Try direct access to MEC variables
+                direct_mec_pos = f'{key}_mec_r_gsm'
+                if direct_mec_pos in data_quants:
+                    pos_v = direct_mec_pos
+                    print(f"      ✅ Found MEC position via direct access: {pos_v}")
+                else:
+                    print(f"      ❌ Direct MEC access also failed for {direct_mec_pos}")
 
             # Also try to get velocity from MEC (for formation analysis)
-            vel_v = _first_valid_var([
+            vel_patterns = [
                 f'{key}_mec_v_gsm',      # MEC GSM velocity (primary)
                 f'{key}_mec_v_gse',      # MEC GSE velocity (backup)
+                f'{key}_mec_vel_gsm',    # Alternative MEC naming
+                f'{key}_mec_vel_gse',    # Alternative MEC naming
                 f'{key}_defeph_vel',     # Definitive velocity
                 f'{key}_state_vel_gsm'   # State velocity
-            ], expect_cols=3)
+            ]
 
-            # Convert MEC data from m to km if needed
+            print(f"   🔍 Searching for velocity variables for MMS{p}:")
+            print(f"      Patterns: {vel_patterns}")
+
+            vel_v = _first_valid_var(vel_patterns, expect_cols=3)
+            print(f"      Found velocity variable: {vel_v}")
+
+            # If standard search failed, try direct MEC access
+            if vel_v is None:
+                direct_mec_vel = f'{key}_mec_v_gsm'
+                if direct_mec_vel in data_quants:
+                    vel_v = direct_mec_vel
+                    print(f"      ✅ Found MEC velocity via direct access: {vel_v}")
+                else:
+                    print(f"      ❌ Direct MEC access also failed for {direct_mec_vel}")
+
+            # Process position data
             if pos_v:
                 times, pos_data = _tp(pos_v)
-                # MEC data is already in km - do NOT convert
-                # (Previous logic was incorrect - MEC positions can be > 100,000 km at apogee)
+                print(f"   📍 Found position data for MMS{p}: {pos_v}")
+                print(f"      Shape: {pos_data.shape}, NaN count: {np.isnan(pos_data).sum()}")
+
+                # MEC data is typically in km - verify and convert if needed
+                if np.nanmax(np.abs(pos_data)) < 100:  # Likely in Earth radii
+                    pos_data = pos_data * 6371.0  # Convert RE to km
+                    print(f"      Converted from RE to km")
+
                 evt[p]['POS_gsm'] = (times, pos_data)
             else:
+                print(f"   ⚠️ No position data found for MMS{p} - using NaN placeholder")
                 evt[p]['POS_gsm'] = (t_stub, np.full((len(t_stub), 3), np.nan))
 
+            # Process velocity data
             if vel_v:
                 times, vel_data = _tp(vel_v)
-                # MEC velocity is already in km/s - do NOT convert
-                # (Typical orbital velocities are ~3-8 km/s, which is < 100)
+                print(f"   🚀 Found velocity data for MMS{p}: {vel_v}")
+                print(f"      Shape: {vel_data.shape}, NaN count: {np.isnan(vel_data).sum()}")
+
+                # MEC velocity is typically in km/s
                 evt[p]['VEL_gsm'] = (times, vel_data)
             else:
+                print(f"   ⚠️ No velocity data found for MMS{p} - using NaN placeholder")
                 evt[p]['VEL_gsm'] = (t_stub, np.full((len(t_stub), 3), np.nan))
 
         # final length sanity
