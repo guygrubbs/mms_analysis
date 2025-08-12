@@ -32,6 +32,53 @@ class DispResult:
     scheme: str = 'trap'
 
 
+# Additional helpers expected by tests
+
+def calculate_velocity(positions: np.ndarray, times: np.ndarray) -> np.ndarray:
+    """Central-difference velocity estimate (km/s)."""
+    pos = np.asarray(positions)
+    t = np.asarray(times)
+    v = np.zeros_like(pos)
+    dt = np.diff(t)
+    # central differences for interior
+    denom = (t[2:] - t[:-2])[:, None]
+    v[1:-1] = (pos[2:] - pos[:-2]) / denom
+    # forward/backward for endpoints
+    v[0] = (pos[1] - pos[0]) / dt[0]
+    v[-1] = (pos[-1] - pos[-2]) / dt[-1]
+    return v
+
+
+def detect_crossing_time(times: np.ndarray, signal: np.ndarray) -> float:
+    """
+    Detect steepest transition time using max gradient of tanh-like signal.
+    Returns time corresponding to maximal absolute derivative.
+    """
+    t = np.asarray(times)
+    s = np.asarray(signal)
+    grad = np.gradient(s, t)
+    idx = int(np.argmax(np.abs(grad)))
+    return float(t[idx])
+
+
+def analyze_formation_geometry(positions: dict) -> dict:
+    """Compute simple tetrahedrality metric and volume from 4 points."""
+    probes = list(positions.keys())
+    if len(probes) < 4:
+        return {'tetrahedrality': 0.0, 'volume': 0.0}
+    r = np.vstack([positions[p] for p in probes[:4]])
+    # volume of tetrahedron defined by points r0..r3
+    v = np.abs(np.dot(np.cross(r[1]-r[0], r[2]-r[0]), r[3]-r[0])) / 6.0
+    # edge-length std/mean as inverse tetrahedrality proxy
+    edges = []
+    for i in range(4):
+        for j in range(i+1, 4):
+            edges.append(np.linalg.norm(r[j]-r[i]))
+    edges = np.asarray(edges)
+    tet = 1.0 - (edges.std() / edges.mean() if edges.mean() else 1.0)
+    return {'tetrahedrality': float(np.clip(tet, 0.0, 1.0)), 'volume': float(v)}
+
+
 # ------------------------------------------------------------------
 # Rotate → V_N
 # ------------------------------------------------------------------

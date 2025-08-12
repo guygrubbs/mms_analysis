@@ -20,6 +20,97 @@ import matplotlib.dates as mdates
 
 from .resample import resample as _resample_single   # optional utility
 
+# Additional spectral analysis helpers expected by tests
+try:
+    from scipy import signal as scipy_signal
+    _HAVE_SCIPY = True
+except Exception:  # pragma: no cover
+    import numpy as _np
+    _HAVE_SCIPY = False
+    class _CompatSignal:
+        # Minimal replacements using numpy
+        def welch(self, x, fs, nperseg=256):
+            n = len(x)
+            freqs = _np.fft.rfftfreq(n, d=1.0/fs)
+            fft = _np.fft.rfft(x * _np.hanning(n))
+            psd = (fft.conj()*fft).real / (fs*n)
+            return freqs, psd
+        def csd(self, x, y, fs, nperseg=256):
+            n = len(x)
+            freqs = _np.fft.rfftfreq(n, d=1.0/fs)
+            X = _np.fft.rfft(x * _np.hanning(n))
+            Y = _np.fft.rfft(y * _np.hanning(n))
+            Pxy = X * _np.conj(Y) / (fs*n)
+            return freqs, Pxy
+        def coherence(self, x, y, fs, nperseg=256):
+            f, Pxy = self.csd(x, y, fs=fs, nperseg=nperseg)
+            f, Px = self.welch(x, fs=fs, nperseg=nperseg)
+            f, Py = self.welch(y, fs=fs, nperseg=nperseg)
+            Cxy = (abs(Pxy)**2) / (Px*Py + 1e-30)
+            return f, Cxy
+    scipy_signal = _CompatSignal()
+
+
+def calculate_psd(signal_1d: np.ndarray, *, fs: float, nperseg: int = 256):
+    f, Pxx = scipy_signal.welch(signal_1d, fs=fs, nperseg=nperseg)
+    return f, Pxx
+
+
+def cross_spectral_analysis(x: np.ndarray, y: np.ndarray, *, fs: float, nperseg: int = 256):
+    f, Pxy = scipy_signal.csd(x, y, fs=fs, nperseg=nperseg)
+    f2, Cxy = scipy_signal.coherence(x, y, fs=fs, nperseg=nperseg)
+    # phase of cross-spectrum
+    phase = np.angle(Pxy)
+    return f, np.abs(Pxy), Cxy, phase
+
+
+def wavelet_analysis(x: np.ndarray, *, fs: float, f_min: float, f_max: float, n_freqs: int = 50):
+    """Simple CWT-like time-frequency analysis; uses SciPy if available, otherwise numpy STFT fallback."""
+    x = np.asarray(x)
+    if _HAVE_SCIPY and hasattr(scipy_signal, 'cwt'):
+        widths = np.linspace(1, n_freqs, n_freqs)
+        try:
+            scalogram = scipy_signal.cwt(x, scipy_signal.morlet2, widths, w=6)
+            freqs = fs * 6 / (2*np.pi*widths)
+        except Exception:
+            scalogram = scipy_signal.cwt(x, scipy_signal.ricker, widths)
+            freqs = fs / widths
+        mask = (freqs >= f_min) & (freqs <= f_max)
+        freqs = freqs[mask]
+        scalogram = np.abs(scalogram[mask])
+        times = np.arange(len(x)) / fs
+        return freqs, times, scalogram
+    # Fallback: STFT using numpy FFT over sliding windows
+    win = int(max(16, min(len(x)//8, fs)))
+    hop = max(1, win//4)
+    window = np.hanning(win)
+    specs = []
+    times = []
+    for start in range(0, len(x)-win+1, hop):
+        seg = x[start:start+win] * window
+        X = np.fft.rfft(seg)
+        freqs = np.fft.rfftfreq(win, d=1.0/fs)
+        specs.append(np.abs(X))
+        times.append((start + win/2)/fs)
+    S = np.array(specs).T  # shape (F, T)
+    # limit frequency range
+    mask = (freqs >= f_min) & (freqs <= f_max)
+    return freqs[mask], np.array(times), S[mask]
+
+
+def analyze_magnetic_fluctuations(B_xyz: np.ndarray, *, fs: float) -> dict:
+    # Sum PSD across components
+    comp = []
+    f_ref = None
+    for i in range(3):
+        f, P = calculate_psd(B_xyz[:, i], fs=fs, nperseg=256)
+        if f_ref is None:
+            f_ref = f
+        comp.append(P)
+    psd_total = np.sum(np.vstack(comp), axis=0)
+    return {'frequencies': f_ref, 'psd_total': psd_total}
+
+
 
 # ----------------------------------------------------------------------
 # Internals

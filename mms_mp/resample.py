@@ -118,6 +118,30 @@ def resample(t_orig: np.ndarray,
 
 
 # ------------------------------------------------------------------
+# Convenience: interpolate to a specific time array
+# ------------------------------------------------------------------
+def interpolate_to_time(t_src: np.ndarray,
+                        y_src: np.ndarray,
+                        t_target: np.ndarray,
+                        *, kind: str = 'linear') -> np.ndarray:
+    """
+    Interpolate y(t) from t_src onto t_target grid using numpy/pandas.
+    Works with 1-D y; uses np.interp for speed.
+    """
+    # Ensure 1-D arrays
+    t_src = np.asarray(t_src).astype(float)
+    t_target = np.asarray(t_target).astype(float)
+    y_src = np.asarray(y_src)
+    if y_src.ndim == 1:
+        return np.interp(t_target, t_src, y_src)
+    else:
+        # Column-wise interpolation
+        out = np.vstack([np.interp(t_target, t_src, y_src[:, i])
+                         for i in range(y_src.shape[1])]).T
+        return out
+
+
+# ------------------------------------------------------------------
 # Public: multi-dict merge
 # ------------------------------------------------------------------
 def merge_vars(vars_in: Dict[str, Tuple[np.ndarray, np.ndarray]],

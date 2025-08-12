@@ -13,6 +13,47 @@ import numpy as np
 import pandas as pd
 from typing import Tuple, Literal, Optional
 
+
+# Convenience unit converter expected by tests
+_DEF_E_UNITS = ('V/m', 'mV/m')
+_DEF_B_UNITS = ('T', 'nT')
+
+def convert_electric_field_units(E: np.ndarray,
+                                 from_unit: str,
+                                 to_unit: str) -> np.ndarray:
+    """Convert electric field units between 'V/m' and 'mV/m'."""
+    if from_unit not in _DEF_E_UNITS or to_unit not in _DEF_E_UNITS:
+        raise ValueError("Supported units: 'V/m' or 'mV/m'")
+    if from_unit == to_unit:
+        return np.asarray(E)
+    if from_unit == 'mV/m' and to_unit == 'V/m':
+        return np.asarray(E) * 1e-3
+    if from_unit == 'V/m' and to_unit == 'mV/m':
+        return np.asarray(E) * 1e3
+    raise ValueError('Unsupported conversion')
+
+
+def calculate_exb_drift(E_field: np.ndarray,
+                        B_field: np.ndarray,
+                        *,
+                        unit_E: Literal['V/m', 'mV/m'] = 'mV/m',
+                        unit_B: Literal['T', 'nT'] = 'nT') -> np.ndarray:
+    """Alias for exb_velocity with scalar/vector convenience."""
+    return exb_velocity(np.atleast_2d(E_field), np.atleast_2d(B_field),
+                        unit_E=unit_E, unit_B=unit_B).squeeze()
+
+
+def calculate_convection_field(velocity_km_s: np.ndarray,
+                               B_nT: np.ndarray) -> np.ndarray:
+    """
+    Motional electric field: E = - v × B.
+    Inputs: v in km/s, B in nT. Output: E in mV/m.
+    """
+    v_m_s = np.asarray(velocity_km_s) * 1e3
+    B_T = np.asarray(B_nT) * 1e-9
+    E_V_m = -np.cross(v_m_s, B_T)
+    return E_V_m * 1e3  # → mV/m
+
 from .data_loader import to_dataframe, resample  # helper functions
 
 # ------------------------------------------------------------------

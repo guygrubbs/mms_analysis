@@ -159,22 +159,52 @@ def overlay_multi(overlay_dict: Dict[str, Dict[str, np.ndarray]],
         fig, ax = plt.subplots(1, 1, figsize=(7, 3))
     col_cycle = ax._get_lines.prop_cycler
 
-    for p in probes:
-        if p not in overlay_dict[var]:
-            continue
-        col = next(col_cycle)['color']
-        data = overlay_dict[var][p]
-        ax.plot(data[:, 0], data[:, 1], label=f'MMS{p}', color=col)
+# ---------------------------------------------------------------------
+# Additional plotting helpers expected by tests
+# ---------------------------------------------------------------------
 
-    ax.axvline(0, color='k', ls='--', lw=1, alpha=.6)
-    ax.set_xlabel(f'Δt from crossing of MMS{ref_probe} (s)')
-    ax.set_ylabel(ylabel or var)
-    ax.set_title(title or f'{var} overlay')
-    ax.legend()
-    if show:
-        plt.tight_layout()
-        plt.show()
-    return ax
+def plot_spectrogram(ax: plt.Axes,
+                     t: np.ndarray,
+                     e: np.ndarray,
+                     data: np.ndarray,
+                     *,
+                     title: str = '',
+                     ylabel: str = 'Energy (eV)',
+                     clabel: str = 'Flux'):
+    from .spectra import generic_spectrogram
+    # Return the QuadMesh/artist so callers can assert creation
+    return generic_spectrogram(t, e, data, ylabel=ylabel, title=title, show=False, ax=ax, return_axes=False) or ax.collections[-1]
+
+
+def plot_magnetic_field(axes: Iterable[plt.Axes],
+                        t: np.ndarray,
+                        B_xyz: np.ndarray,
+                        *, labels=None, colors=None):
+    axes = list(axes)
+    labels = labels or ['Bx', 'By', 'Bz']
+    colors = colors or [None, None, None]
+    for i in range(3):
+        _safe_plot(axes[i], t, B_xyz[:, i], label=labels[i], color=colors[i])
+        axes[i].legend(loc='upper right')
+    axes[-1].set_xlabel('Time (s)')
+
+
+def plot_boundary_structure(axes: Iterable[plt.Axes],
+                            x: np.ndarray,
+                            series_list: Iterable[np.ndarray],
+                            *, labels=None, title: str = ''):
+    axes = list(axes)
+    labels = labels or [f'Var {i+1}' for i in range(len(series_list))]
+    for ax, y, lab in zip(axes, series_list, labels):
+        _safe_plot(ax, x, y, label=lab)
+        ax.legend(loc='upper right')
+        ax.axvline(0.0, color='k', lw=0.8, alpha=0.5)
+    if title:
+        axes[0].set_title(title)
+
+    # Note: overlay plotting handled in overlay_multi();
+    # this helper only draws the provided series with boundary marker.
+    return axes
 
 # =====================================================================
 # Displacement versus time

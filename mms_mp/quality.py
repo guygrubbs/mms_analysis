@@ -19,6 +19,51 @@ except (ImportError, ValueError):  # running as script
     from resample import resample as _resample
 
 
+# Additional quality analysis utilities expected by tests
+
+def detect_outliers(data: np.ndarray, *, method: str = 'iqr', threshold: float = 3.0) -> np.ndarray:
+    """Return boolean mask where samples are outliers."""
+    x = np.asarray(data)
+    if method == 'iqr':
+        q1, q3 = np.percentile(x, [25, 75])
+        iqr = q3 - q1
+        lo, hi = q1 - threshold * iqr, q3 + threshold * iqr
+        return (x < lo) | (x > hi)
+    elif method == 'zscore':
+        mu, sd = np.nanmean(x), np.nanstd(x)
+        z = (x - mu) / (sd if sd else 1.0)
+        return np.abs(z) > threshold
+    else:
+        raise ValueError('Unknown method')
+
+
+def detect_data_gaps(times: np.ndarray, *, expected_cadence: float, gap_threshold: float) -> list:
+    """Detect gaps larger than gap_threshold×expected cadence. Times in seconds.
+    Start time is reported as the first missing sample index time (rounded).
+    """
+    t = np.asarray(times)
+    dt = np.diff(t)
+    gaps = []
+    thr = gap_threshold * expected_cadence
+    idxs = np.where(dt > thr)[0]
+    for i in idxs:
+        # Report start_time as the first missing expected sample boundary
+        # If the next observed time is t[i+1] and previous is t[i], the first
+        # missing boundary is t[i] + expected_cadence (no rounding).
+        start = float(t[i] + expected_cadence)
+        gaps.append({'start_time': start, 'end_time': float(t[i+1]), 'duration': float(dt[i])})
+    return gaps
+
+
+def calculate_signal_quality(signal: np.ndarray) -> dict:
+    x = np.asarray(signal)
+    rms = np.sqrt(np.nanmean(x**2))
+    noise = x - np.convolve(x, np.ones(11)/11, mode='same')
+    noise_rms = np.sqrt(np.nanmean(noise**2))
+    snr = rms / (noise_rms if noise_rms else np.nan)
+    return {'snr': float(snr), 'rms': float(rms), 'noise_rms': float(noise_rms)}
+
+
 # ------------------------------------------------------------------
 # Generic flag-mask helpers
 # ------------------------------------------------------------------

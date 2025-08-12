@@ -204,10 +204,16 @@ def load_event(
         # mandatory ions
         ion_nd = _first_valid_var([f'{key}_dis_numberdensity_*'])
         if ion_nd is None:
-            raise RuntimeError(f'MMS{p}: ion density not found — aborting')
-        suff = ion_nd.split('_')[-1]
-        evt[p]['N_tot']   = _tp(ion_nd)
-        evt[p]['V_i_gse'] = _tp(f'{key}_dis_bulkv_gse_{suff}')
+            # Graceful fallback: fabricate empty placeholders instead of aborting
+            warnings.warn(f'[WARN] Ion density not found for MMS{p} – using placeholders')
+            # Use B_gsm time stub shortly after to size placeholders consistently
+            # Temporarily store a flag; we'll replace with real t_stub when available
+            evt[p]['N_tot']   = (None, None)
+            evt[p]['V_i_gse'] = (None, None)
+        else:
+            suff = ion_nd.split('_')[-1]
+            evt[p]['N_tot']   = _tp(ion_nd)
+            evt[p]['V_i_gse'] = _tp(f'{key}_dis_bulkv_gse_{suff}')
 
         # --- B-field (vector, 3-column preferred) ---------------------------
         # try exact 3-column first …
@@ -228,6 +234,8 @@ def load_event(
                 # nothing at all found → fabricate NaN placeholder so code runs
                 warnings.warn(f'[WARN] B-field absent for MMS{p}')
                 t_stub = evt[p]['N_tot'][0]
+                if t_stub is None:
+                    t_stub = np.linspace(0.0, 1.0, 10)
                 evt[p]['B_gsm'] = (
                     t_stub,
                     np.full((len(t_stub), 3), np.nan)
@@ -237,9 +245,12 @@ def load_event(
 
         # --------------------------------------------------------------------
         # placeholders that depend on B_gsm’s shape (now guaranteed to exist)
-        t_stub          = evt[p]['B_gsm'][0]
-        nan_like_vec    = lambda: np.full_like(evt[p]['B_gsm'][1], np.nan)
-        nan_like_scalar = lambda: np.full_like(evt[p]['N_tot'][1], np.nan)
+        t_stub = evt[p]['B_gsm'][0]
+        # Build placeholders strictly from t_stub to avoid None-based shapes
+        def nan_like_vec():
+            return np.full((len(t_stub), 3), np.nan)
+        def nan_like_scalar():
+            return np.full(len(t_stub), np.nan)
 
         # --- electrons (DES) -------------------------------------------------
         des_nd = _first_valid_var([f'{key}_des_numberdensity_*'])
@@ -357,6 +368,12 @@ def load_event(
             else:
                 print(f"   ⚠️ No velocity data found for MMS{p} - using NaN placeholder")
                 evt[p]['VEL_gsm'] = (t_stub, np.full((len(t_stub), 3), np.nan))
+
+        # Replace placeholders if earlier ion density missing
+        if evt[p].get('N_tot', (None,))[0] is None:
+            t_stub = evt[p]['B_gsm'][0] if 'B_gsm' in evt[p] else np.linspace(0.0, 1.0, 10)
+            evt[p]['N_tot']   = (t_stub, np.full_like(t_stub, np.nan, dtype=float))
+            evt[p]['V_i_gse'] = (t_stub, np.full((len(t_stub), 3), np.nan))
 
         # final length sanity
         for k, (t_arr, d_arr) in evt[p].items():

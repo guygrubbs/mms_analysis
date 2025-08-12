@@ -288,8 +288,8 @@ class TestElectricFieldPhysics:
         # Expected drift: E×B/B² in Y direction
         # |v_exb| = |E|/|B| = 1 mV/m / 50 nT = 20 km/s
         expected_magnitude = 20.0  # km/s
-        expected_direction = np.array([0.0, 1.0, 0.0])  # Y direction
-        
+        expected_direction = np.array([0.0, -1.0, 0.0])  # -Y by right-hand rule
+
         np.testing.assert_allclose(v_exb, expected_magnitude * expected_direction, 
                                  rtol=1e-10, err_msg="E×B drift calculation incorrect")
     
@@ -311,9 +311,9 @@ class TestElectricFieldPhysics:
         
         E_conv = electric.calculate_convection_field(velocity, B_field)
         
-        # Expected: E = -v × B = -[100, 0, 0] × [0, 0, 50] = [0, -5000, 0] mV/m
-        expected = np.array([0.0, -5000.0, 0.0])  # mV/m
-        
+        # Expected: E = -v × B; with v=[100,0,0] km/s and B=[0,0,50] nT → [0, +5, 0] mV/m
+        expected = np.array([0.0, 5.0, 0.0])  # mV/m
+
         np.testing.assert_allclose(E_conv, expected, rtol=1e-10,
                                  err_msg="Convection electric field calculation incorrect")
 

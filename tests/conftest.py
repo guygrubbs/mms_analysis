@@ -1,9 +1,42 @@
 """
 Pytest configuration and fixtures for MMS-MP tests
 """
+import os
+# Force non-interactive matplotlib backend early to avoid GUI hangs
+os.environ.setdefault("MPLBACKEND", "Agg")
+
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+# Ensure any accidental plt.show() during tests is a no-op
+plt.show = lambda *args, **kwargs: None
+
 import pytest
 import numpy as np
+import sys
+import faulthandler
 from datetime import datetime
+
+# Auto-close figures after each test to prevent resource buildup
+@pytest.fixture(autouse=True)
+def _close_figures():
+    yield
+    try:
+        import matplotlib.pyplot as _plt
+        _plt.close('all')
+    except Exception:
+        pass
+
+# Dump stack traces if a test runs too long; helps diagnose rare stalls on Windows
+@pytest.fixture(autouse=True)
+def _faulthandler_timeout():
+    faulthandler.enable()
+    # Schedule a dump if the interpreter appears stuck >120s
+    faulthandler.dump_traceback_later(120, repeat=False, file=sys.stderr)
+    try:
+        yield
+    finally:
+        faulthandler.cancel_dump_traceback_later()
 
 
 @pytest.fixture

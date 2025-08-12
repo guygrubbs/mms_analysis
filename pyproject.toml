@@ -49,6 +49,7 @@ dependencies = [
 dev = [
     "pytest>=6.0",
     "pytest-cov",
+    "pytest-timeout>=2.1.0",
     "black",
     "flake8",
     "mypy",
@@ -100,7 +101,7 @@ testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
-addopts = "--strict-markers --strict-config --verbose"
+addopts = "--strict-markers --strict-config --verbose --timeout=180 --timeout-method=thread"
 
 [tool.mypy]
 python_version = "3.8"
