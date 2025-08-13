@@ -13,18 +13,138 @@ import pandas as pd
 import warnings
 from scipy import signal
 import os
+from pathlib import Path
+import fnmatch
+from pyspedas import get_data
+from pytplot import data_quants
 
 # Import MMS-MP modules
-from mms_mp import data_loader, coords, boundary, formation_detection, multispacecraft, visualize
+from mms_mp import data_loader, coords, boundary, formation_detection, multispacecraft, visualize, spectra
+
+
+# ---------------------------------------------------------------------
+# Inspectable per‑probe quick‑looks (PNG/CSV/HTML) with spectrograms
+# ---------------------------------------------------------------------
+
+def _first_var_by_rate(base: str) -> str | None:
+    for rate in ('brst', 'fast', 'srvy'):
+        for v in fnmatch.filter(data_quants.keys(), f"{base}_{rate}*"):
+            try:
+                tt, dd = get_data(v)
+                if tt is not None and dd is not None and dd.ndim == 4 and dd.shape[2] > 1 and dd.shape[3] > 1:
+                    return v
+            except Exception:
+                continue
+    return None
+
+
+def _energy_var_for(base: str) -> str | None:
+    for rate in ('brst', 'fast', 'srvy'):
+        for v in fnmatch.filter(data_quants.keys(), f"{base}_energy_{rate}*"):
+            try:
+                _, ee = get_data(v)
+                if ee is not None and ee.ndim == 1 and len(ee) > 1:
+                    return v
+            except Exception:
+                continue
+    return None
+
+
+def save_inspectable_visuals(evt: dict, center: datetime, minutes: int = 120) -> None:
+    from mms_mp import coords, visualize, spectra
+    outdir = Path('results/visualizations')
+    outdir.mkdir(parents=True, exist_ok=True)
+    ts = center.strftime('%Y%m%d_%H%M%S')
+
+    for probe in ['1', '2', '3', '4']:
+        if probe not in evt or 'B_gsm' not in evt[probe]:
+            continue
+        tB_raw, B_gsm = evt[probe]['B_gsm']
+        if tB_raw is None or B_gsm is None or len(tB_raw) == 0:
+            continue
+        t = data_loader._tt2000_to_datetime64_ns(tB_raw)
+        lmn = coords.hybrid_lmn(B_gsm)
+        B_lmn = lmn.to_lmn(B_gsm)
+
+        Ni = evt[probe].get('N_tot', (tB_raw, np.full(len(t), np.nan)))[1]
+        Ne = evt[probe].get('N_e',   (tB_raw, np.full(len(t), np.nan)))[1]
+        Nhe= evt[probe].get('N_he',  (tB_raw, np.full(len(t), np.nan)))[1]
+
+        Vi = evt[probe].get('V_i_gse', (tB_raw, np.full((len(t),3), np.nan)))[1]
+        Ve = evt[probe].get('V_e_gse', (tB_raw, np.full((len(t),3), np.nan)))[1]
+        Vhe= evt[probe].get('V_he_gsm', (tB_raw, np.full((len(t),3), np.nan)))[1]
+
+        R = lmn.R
+        vN_i  = (Vi @ R.T)[:, 2] if np.isfinite(Vi).any() else np.full(len(t), np.nan)
+        vN_e  = (Ve @ R.T)[:, 2] if np.isfinite(Ve).any() else np.full(len(t), np.nan)
+        vN_he = (Vhe @ R.T)[:, 2] if np.isfinite(Vhe).any() else np.full(len(t), np.nan)
+
+        # Align lengths
+        min_len = min(len(t), len(B_lmn), len(Ni), len(Ne), len(Nhe), len(vN_i), len(vN_e), len(vN_he))
+        if min_len <= 1:
+            continue
+        t = t[:min_len]; B_lmn = B_lmn[:min_len]; Ni = Ni[:min_len]; Ne = Ne[:min_len]; Nhe = Nhe[:min_len]
+        vN_i = vN_i[:min_len]; vN_e = vN_e[:min_len]; vN_he = vN_he[:min_len]
+
+        title = f"MMS{probe} — {center:%Y-%m-%d %H:%M} UT ±{minutes//2} min (LMN: {getattr(lmn,'method','hybrid')})"
+        axes = visualize.summary_single(t=t, B_lmn=B_lmn, N_i=Ni, N_e=Ne, N_he=Nhe,
+                                        vN_i=vN_i, vN_e=vN_e, vN_he=vN_he, title=title, show=False)
+        # Spectrograms on panels 3 and 4
+        des_var = _first_var_by_rate(f"mms{probe}_des_energyspectr")
+        dis_var = _first_var_by_rate(f"mms{probe}_dis_energyspectr")
+        if des_var:
+            t_des, flux4d_e = get_data(des_var)
+            evar = _energy_var_for(f"mms{probe}_des")
+            _, e_des = get_data(evar) if evar else (None, None)
+            if t_des is not None and e_des is not None:
+                t_des = data_loader._tt2000_to_datetime64_ns(t_des)
+                spectra.fpi_electron_spectrogram(axes[3], t_des, e_des, flux4d_e, log10=True, show=False)
+        if dis_var:
+            t_dis, flux4d_i = get_data(dis_var)
+            evar = _energy_var_for(f"mms{probe}_dis")
+            _, e_dis = get_data(evar) if evar else (None, None)
+            if t_dis is not None and e_dis is not None:
+                t_dis = data_loader._tt2000_to_datetime64_ns(t_dis)
+                spectra.fpi_ion_spectrogram(axes[4], t_dis, e_dis, flux4d_i, log10=True, show=False)
+
+        fig = axes[0].figure
+        png = outdir / f"mms{probe}_summary_{ts}.png"
+        fig.savefig(png, dpi=300, bbox_inches='tight')
+
+        # HTML
+        html_path = outdir / f"mms{probe}_summary_{ts}.html"
+        try:
+            with open(html_path, 'w', encoding='utf-8') as hf:
+                hf.write("<html><head><meta charset='utf-8'><title>MMS {} Summary</title></head><body>".format(probe))
+                hf.write(f"<h2>MMS{probe} — {center:%Y-%m-%d %H:%M} UT ±{minutes//2} min</h2>")
+                hf.write(f"<p>LMN method: {getattr(lmn, 'method', 'hybrid')}</p>")
+                hf.write(f"<p>L: {lmn.L.tolist()}<br>M: {lmn.M.tolist()}<br>N: {lmn.N.tolist()}</p>")
+                hf.write(f"<img src='{png.name}' style='max-width:100%;height:auto;' />")
+                hf.write("</body></html>")
+        except Exception:
+            pass
+
+        # CSV
+        try:
+            df = pd.DataFrame({
+                't': t.astype('datetime64[ns]').astype('datetime64[ms]'),
+                'B_L': B_lmn[:,0], 'B_M': B_lmn[:,1], 'B_N': B_lmn[:,2],
+                'Vn_i': vN_i, 'Vn_e': vN_e, 'Vn_he': vN_he,
+            })
+            (outdir / f"mms{probe}_summary_{ts}.csv").write_text(df.to_csv(index=False), encoding='utf-8')
+        except Exception:
+            pass
+
+        plt.close(fig)
 
 def main():
     """Main comprehensive analysis function"""
-    
+
     print("COMPREHENSIVE MMS EVENT ANALYSIS: 2019-01-27 12:30:50 UT")
     print("2-Hour Window (±1 hour) with Full Tool Suite")
     print("=" * 80)
     print(f"Started: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    
+
     # Define 2-hour time range: ±1 hour around the event
     event_time = '2019-01-27/12:30:50'
     event_dt = datetime(2019, 1, 27, 12, 30, 50)
@@ -33,13 +153,13 @@ def main():
         (event_dt + timedelta(hours=1)).strftime('%Y-%m-%d/%H:%M:%S')
     ]
     probes = ['1', '2', '3', '4']
-    
+
     print(f"\n📡 Loading MMS data for comprehensive analysis...")
     print(f"   Event time: {event_time}")
     print(f"   Time range: {trange[0]} to {trange[1]}")
     print(f"   Window: 2 hours (±1 hour around event)")
     print(f"   Spacecraft: MMS1, MMS2, MMS3, MMS4")
-    
+
     try:
         # Load comprehensive MMS data
         evt = data_loader.load_event(
@@ -51,36 +171,56 @@ def main():
             include_brst=True,         # Include burst mode if available
             include_ephem=True         # Include spacecraft ephemeris
         )
-        
+
         print(f"✅ Comprehensive MMS data loaded successfully!")
         for probe in probes:
             if probe in evt:
                 print(f"   MMS{probe}: {len(evt[probe])} variables loaded")
-        
+
         # Perform comprehensive analysis
+        # Optional: write an index with links to per-probe visuals if available
+        outdir = Path('results/visualizations')
+        ts = event_dt.strftime('%Y%m%d_%H%M%S')
+        idx = outdir / f'index_{ts}.html'
+        outdir.mkdir(parents=True, exist_ok=True)
+        try:
+            with open(idx, 'w', encoding='utf-8') as f:
+                f.write("<html><head><meta charset='utf-8'><title>Comprehensive Visuals</title></head><body>")
+                f.write(f"<h2>Comprehensive Visuals — {event_dt:%Y-%m-%d %H:%M} UT ±60 min</h2><ul>")
+                for pr in ['1','2','3','4']:
+                    html_name = f"mms{pr}_summary_{ts}.html"
+                    png_name  = f"mms{pr}_summary_{ts}.png"
+                    csv_name  = f"mms{pr}_summary_{ts}.csv"
+                    f.write(f"<li>MMS{pr}: <a href='{html_name}'>HTML</a> | <a href='{png_name}'>PNG</a> | <a href='{csv_name}'>CSV</a></li>")
+                f.write("</ul></body></html>")
+        except Exception:
+            pass
+
         results = perform_comprehensive_analysis(evt, event_dt, trange)
-        
+
         # Create all visualizations
         create_comprehensive_visualizations(results, event_dt, trange)
-        
+        # Also produce inspectable per‑probe quick‑looks with spectrograms
+        save_inspectable_visuals(evt, event_dt, minutes=120)
+
         # Generate detailed report
         generate_analysis_report(results, event_dt)
-        
+
         print(f"\n🎉 COMPREHENSIVE ANALYSIS COMPLETE!")
         print(f"📊 All visualizations and reports generated")
         print(f"📁 Results saved in current directory")
-        
+
     except Exception as e:
         print(f"❌ Error in comprehensive analysis: {e}")
         import traceback
         traceback.print_exc()
         return False
-    
+
     return True
 
 def perform_comprehensive_analysis(evt, event_dt, trange):
     """Perform comprehensive analysis using all available tools"""
-    
+
     results = {
         'event_time': event_dt,
         'time_range': trange,
@@ -91,43 +231,43 @@ def perform_comprehensive_analysis(evt, event_dt, trange):
         'multispacecraft_analysis': {},
         'event_correlations': {}
     }
-    
+
     print(f"\n🔬 COMPREHENSIVE ANALYSIS PIPELINE")
     print("=" * 50)
-    
+
     # 1. Individual spacecraft analysis
     print(f"\n1️⃣ Individual Spacecraft Analysis...")
     for probe in ['1', '2', '3', '4']:
         if probe in evt:
             results['spacecraft_data'][probe] = analyze_spacecraft_data(evt[probe], probe, event_dt)
-    
+
     # 2. Formation analysis
     print(f"\n2️⃣ Formation Analysis...")
     results['formation_analysis'] = analyze_formation(evt, event_dt)
-    
+
     # 3. Boundary detection for each spacecraft
     print(f"\n3️⃣ Boundary Detection Analysis...")
     results['boundary_analysis'] = analyze_boundaries(evt, event_dt)
-    
+
     # 4. LMN coordinate analysis
     print(f"\n4️⃣ LMN Coordinate Analysis...")
     results['lmn_analysis'] = analyze_lmn_coordinates(evt, event_dt)
-    
+
     # 5. Multi-spacecraft correlation
     print(f"\n5️⃣ Multi-spacecraft Correlation Analysis...")
     results['multispacecraft_analysis'] = analyze_multispacecraft_correlations(evt, event_dt)
-    
+
     # 6. Event crossing correlation
     print(f"\n6️⃣ Event Crossing Correlation...")
     results['event_correlations'] = correlate_event_crossings(results, event_dt)
-    
+
     return results
 
 def analyze_spacecraft_data(data, probe, event_dt):
     """Analyze individual spacecraft data"""
-    
+
     print(f"   📡 Analyzing MMS{probe}...")
-    
+
     spacecraft_results = {
         'probe': probe,
         'magnetic_field': None,
@@ -135,12 +275,12 @@ def analyze_spacecraft_data(data, probe, event_dt):
         'position_data': None,
         'event_signatures': {}
     }
-    
+
     # Magnetic field analysis
     if 'B_gsm' in data:
         times_b, b_data = data['B_gsm']
         b_mag = np.linalg.norm(b_data, axis=1)
-        
+
         spacecraft_results['magnetic_field'] = {
             'times': times_b,
             'B_field': b_data,
@@ -150,18 +290,18 @@ def analyze_spacecraft_data(data, probe, event_dt):
             'B_range': [np.min(b_mag), np.max(b_mag)],
             'data_points': len(b_mag)
         }
-        
+
         # Detect magnetic field variations around event
         event_idx = find_nearest_time_index(times_b, event_dt)
         if event_idx is not None:
             window = slice(max(0, event_idx-100), min(len(b_mag), event_idx+100))
             event_b = b_mag[window]
             spacecraft_results['event_signatures']['B_variation'] = np.std(event_b)
-    
+
     # Plasma analysis
     if 'N_tot' in data:
         times_n, n_data = data['N_tot']
-        
+
         spacecraft_results['plasma_data'] = {
             'times': times_n,
             'density': n_data,
@@ -170,22 +310,22 @@ def analyze_spacecraft_data(data, probe, event_dt):
             'density_range': [np.min(n_data), np.max(n_data)],
             'data_points': len(n_data)
         }
-        
+
         # Detect plasma variations around event
         event_idx = find_nearest_time_index(times_n, event_dt)
         if event_idx is not None:
             window = slice(max(0, event_idx-10), min(len(n_data), event_idx+10))
             event_n = n_data[window]
             spacecraft_results['event_signatures']['density_variation'] = np.std(event_n)
-    
+
     # Position analysis
     if 'POS_gsm' in data:
         times_pos, pos_data = data['POS_gsm']
-        
+
         # Check for valid position data
         valid_mask = ~np.isnan(pos_data).any(axis=1)
         n_valid = np.sum(valid_mask)
-        
+
         if n_valid > 0:
             valid_pos = pos_data[valid_mask]
             spacecraft_results['position_data'] = {
@@ -201,7 +341,7 @@ def analyze_spacecraft_data(data, probe, event_dt):
             base_pos = np.array([10.5, 3.2, 1.8]) * RE_km
             offsets = {'1': [0, 0, 0], '2': [25, 0, 0], '3': [50, 0, 0], '4': [75, 0, 0]}
             fallback_pos = base_pos + np.array(offsets[probe])
-            
+
             spacecraft_results['position_data'] = {
                 'times': times_pos,
                 'positions': np.tile(fallback_pos, (len(times_pos), 1)),
@@ -209,24 +349,24 @@ def analyze_spacecraft_data(data, probe, event_dt):
                 'valid_fraction': 0.0,
                 'fallback_used': True
             }
-    
+
     print(f"      ✅ MMS{probe}: {spacecraft_results['magnetic_field']['data_points'] if spacecraft_results['magnetic_field'] else 0} B-field points, "
           f"{spacecraft_results['plasma_data']['data_points'] if spacecraft_results['plasma_data'] else 0} plasma points")
-    
+
     return spacecraft_results
 
 def analyze_formation(evt, event_dt):
     """Analyze spacecraft formation using formation_detection module"""
-    
+
     print(f"   🛰️ Analyzing spacecraft formation...")
-    
+
     try:
         # Get positions for all spacecraft
         positions = {}
         for probe in ['1', '2', '3', '4']:
             if probe in evt and 'POS_gsm' in evt[probe]:
                 times_pos, pos_data = evt[probe]['POS_gsm']
-                
+
                 # Find position closest to event time
                 event_idx = find_nearest_time_index(times_pos, event_dt)
                 if event_idx is not None:
@@ -239,63 +379,63 @@ def analyze_formation(evt, event_dt):
                         base_pos = np.array([10.5, 3.2, 1.8]) * RE_km
                         offsets = {'1': [0, 0, 0], '2': [25, 0, 0], '3': [50, 0, 0], '4': [75, 0, 0]}
                         positions[probe] = base_pos + np.array(offsets[probe])
-        
+
         if len(positions) >= 3:
             # Use formation_detection module
             formation_result = formation_detection.analyze_formation(positions)
-            
+
             formation_analysis = {
                 'formation_type': formation_result.get('type', 'Unknown'),
                 'quality_factor': formation_result.get('quality', 0.0),
                 'characteristic_scale': formation_result.get('scale', 0.0),
                 'positions': positions,
                 'center_of_mass': np.mean(list(positions.values()), axis=0),
-                'formation_size': np.max([np.linalg.norm(pos - np.mean(list(positions.values()), axis=0)) 
+                'formation_size': np.max([np.linalg.norm(pos - np.mean(list(positions.values()), axis=0))
                                         for pos in positions.values()])
             }
-            
+
             print(f"      ✅ Formation: {formation_analysis['formation_type']}, "
                   f"Scale: {formation_analysis['characteristic_scale']:.1f} km")
-            
+
             return formation_analysis
         else:
             print(f"      ⚠️ Insufficient position data for formation analysis")
             return {'formation_type': 'Insufficient_Data'}
-            
+
     except Exception as e:
         print(f"      ❌ Formation analysis failed: {e}")
         return {'formation_type': 'Analysis_Failed', 'error': str(e)}
 
 def analyze_boundaries(evt, event_dt):
     """Analyze boundary crossings for each spacecraft"""
-    
+
     print(f"   🌐 Analyzing boundary crossings...")
-    
+
     boundary_results = {}
-    
+
     for probe in ['1', '2', '3', '4']:
         if probe in evt:
             try:
                 # Get required data for boundary detection
                 b_data = evt[probe].get('B_gsm')
                 n_data = evt[probe].get('N_tot')
-                
+
                 if b_data and n_data:
                     times_b, b_field = b_data
                     times_n, density = n_data
-                    
+
                     # Use boundary detection module
                     boundary_result = boundary.detect_boundaries(
                         times_n, density, times_b, b_field
                     )
-                    
+
                     boundary_results[probe] = {
                         'crossings': boundary_result.get('crossings', []),
                         'boundary_states': boundary_result.get('states', []),
                         'crossing_times': boundary_result.get('crossing_times', []),
                         'magnetosphere_fraction': boundary_result.get('magnetosphere_fraction', 0.0)
                     }
-                    
+
                     # Find crossings near event time
                     event_crossings = []
                     for crossing_time in boundary_result.get('crossing_times', []):
@@ -303,7 +443,7 @@ def analyze_boundaries(evt, event_dt):
                             crossing_dt = datetime.utcfromtimestamp(crossing_time)
                         else:
                             crossing_dt = crossing_time
-                        
+
                         time_diff = abs((crossing_dt - event_dt).total_seconds())
                         if time_diff <= 1800:  # Within 30 minutes
                             event_crossings.append({
@@ -311,33 +451,33 @@ def analyze_boundaries(evt, event_dt):
                                 'time_offset': time_diff,
                                 'type': 'boundary_crossing'
                             })
-                    
+
                     boundary_results[probe]['event_crossings'] = event_crossings
-                    
+
                     print(f"      ✅ MMS{probe}: {len(boundary_result.get('crossings', []))} total crossings, "
                           f"{len(event_crossings)} near event")
                 else:
                     boundary_results[probe] = {'status': 'insufficient_data'}
                     print(f"      ⚠️ MMS{probe}: Insufficient data for boundary analysis")
-                    
+
             except Exception as e:
                 boundary_results[probe] = {'status': 'analysis_failed', 'error': str(e)}
                 print(f"      ❌ MMS{probe}: Boundary analysis failed: {e}")
-    
+
     return boundary_results
 
 def analyze_lmn_coordinates(evt, event_dt):
     """Analyze LMN coordinates for each spacecraft over time"""
-    
+
     print(f"   🧭 Analyzing LMN coordinates...")
-    
+
     lmn_results = {}
-    
+
     for probe in ['1', '2', '3', '4']:
         if probe in evt and 'B_gsm' in evt[probe]:
             try:
                 times_b, b_data = evt[probe]['B_gsm']
-                
+
                 # Get position data
                 pos_ref = np.array([66000.0, 20000.0, 11000.0])  # Default reference
                 if 'POS_gsm' in evt[probe]:
@@ -345,16 +485,16 @@ def analyze_lmn_coordinates(evt, event_dt):
                     event_idx = find_nearest_time_index(times_pos, event_dt)
                     if event_idx is not None and not np.isnan(pos_data[event_idx]).any():
                         pos_ref = pos_data[event_idx]
-                
+
                 # Perform LMN analysis using coords module
                 lmn_result = coords.hybrid_lmn(times_b, b_data, pos_ref)
-                
+
                 if lmn_result:
                     # Calculate LMN coordinates over time
                     L_dir = lmn_result.get('L', np.array([1, 0, 0]))
                     M_dir = lmn_result.get('M', np.array([0, 1, 0]))
                     N_dir = lmn_result.get('N', np.array([0, 0, 1]))
-                    
+
                     # Transform position to LMN coordinates if available
                     lmn_positions = None
                     if 'POS_gsm' in evt[probe]:
@@ -365,7 +505,7 @@ def analyze_lmn_coordinates(evt, event_dt):
                             # Transform to LMN coordinates
                             lmn_transform = np.array([L_dir, M_dir, N_dir])
                             lmn_positions = np.dot(valid_pos, lmn_transform.T)
-                    
+
                     lmn_results[probe] = {
                         'L_direction': L_dir,
                         'M_direction': M_dir,
@@ -376,69 +516,69 @@ def analyze_lmn_coordinates(evt, event_dt):
                         'position_times': times_pos[valid_mask] if 'POS_gsm' in evt[probe] and np.any(valid_mask) else None,
                         'reference_position': pos_ref
                     }
-                    
+
                     print(f"      ✅ MMS{probe}: LMN analysis complete, "
                           f"λ ratio: {lmn_result.get('lambda_ratio', 'N/A'):.2f}")
                 else:
                     lmn_results[probe] = {'status': 'analysis_failed'}
                     print(f"      ❌ MMS{probe}: LMN analysis failed")
-                    
+
             except Exception as e:
                 lmn_results[probe] = {'status': 'error', 'error': str(e)}
                 print(f"      ❌ MMS{probe}: LMN analysis error: {e}")
         else:
             lmn_results[probe] = {'status': 'no_data'}
             print(f"      ⚠️ MMS{probe}: No magnetic field data")
-    
+
     return lmn_results
 
 def analyze_multispacecraft_correlations(evt, event_dt):
     """Analyze multi-spacecraft correlations"""
-    
+
     print(f"   🔗 Analyzing multi-spacecraft correlations...")
-    
+
     try:
         # Use multispacecraft module for correlation analysis
         correlation_result = multispacecraft.analyze_correlations(evt, event_dt)
-        
+
         multisc_results = {
             'timing_analysis': correlation_result.get('timing', {}),
             'spatial_correlations': correlation_result.get('spatial', {}),
             'field_correlations': correlation_result.get('magnetic', {}),
             'plasma_correlations': correlation_result.get('plasma', {})
         }
-        
+
         print(f"      ✅ Multi-spacecraft correlation analysis complete")
         return multisc_results
-        
+
     except Exception as e:
         print(f"      ❌ Multi-spacecraft analysis failed: {e}")
         return {'status': 'analysis_failed', 'error': str(e)}
 
 def correlate_event_crossings(results, event_dt):
     """Correlate event crossings with spacecraft positions in LMN coordinates"""
-    
+
     print(f"   📍 Correlating event crossings with LMN positions...")
-    
+
     correlations = {}
-    
+
     for probe in ['1', '2', '3', '4']:
         if probe in results['boundary_analysis'] and probe in results['lmn_analysis']:
             boundary_data = results['boundary_analysis'][probe]
             lmn_data = results['lmn_analysis'][probe]
-            
+
             if 'event_crossings' in boundary_data and 'lmn_positions' in lmn_data:
                 probe_correlations = []
-                
+
                 for crossing in boundary_data['event_crossings']:
                     crossing_time = crossing['time']
-                    
+
                     # Find LMN position at crossing time
                     if lmn_data['position_times'] is not None and lmn_data['lmn_positions'] is not None:
                         crossing_idx = find_nearest_time_index(lmn_data['position_times'], crossing_time)
                         if crossing_idx is not None:
                             lmn_pos = lmn_data['lmn_positions'][crossing_idx]
-                            
+
                             probe_correlations.append({
                                 'crossing_time': crossing_time,
                                 'time_offset_from_event': crossing['time_offset'],
@@ -447,7 +587,7 @@ def correlate_event_crossings(results, event_dt):
                                 'M_coordinate': lmn_pos[1],
                                 'N_coordinate': lmn_pos[2]
                             })
-                
+
                 correlations[probe] = probe_correlations
                 print(f"      ✅ MMS{probe}: {len(probe_correlations)} crossings correlated with LMN positions")
             else:
@@ -456,12 +596,12 @@ def correlate_event_crossings(results, event_dt):
         else:
             correlations[probe] = []
             print(f"      ⚠️ MMS{probe}: Missing boundary or LMN data")
-    
+
     return correlations
 
 def find_nearest_time_index(times, target_time):
     """Find index of time array closest to target time"""
-    
+
     try:
         if hasattr(times[0], 'astype'):  # numpy datetime64
             target_np = np.datetime64(target_time)

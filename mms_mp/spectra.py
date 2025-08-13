@@ -186,7 +186,8 @@ def generic_spectrogram(t: np.ndarray,
                         mask: Optional[np.ndarray] = None,
                         ax: Optional[plt.Axes] = None,
                         show: bool = True,
-                        return_axes: bool = False):
+                        return_axes: bool = False,
+                        clabel: Optional[str] = None):
     """
     Quick-draw pcolormesh for any 2-D spectrogram.
 
@@ -196,12 +197,13 @@ def generic_spectrogram(t: np.ndarray,
     log10      : take log10(data)  (default True)
     mask       : boolean same shape as data – False→transparent
     vmin/vmax  : colour limits **after** log10 if log10=True
+    clabel     : optional colorbar label override (e.g., 'log10 dJ (keV/(cm^2 s sr keV))')
     """
     z = _prep_log(data, log10)
-    clabel = 'log$_{10}$ Flux' if log10 else 'Flux'
+    cbl = clabel if clabel is not None else ('log$_{10}$ Flux' if log10 else 'Flux')
     return _generic_pcolormesh(t, e, z,
                                ylabel=ylabel,
-                               clabel=clabel,
+                               clabel=cbl,
                                vmin=vmin, vmax=vmax,
                                cmap=cmap, title=title,
                                mask=mask, ax=ax,
@@ -213,15 +215,38 @@ def generic_spectrogram(t: np.ndarray,
 # FPI helpers
 # ----------------------------------------------------------------------
 def _collapse_fpi(flux4d: np.ndarray,
+                  e_len: int,
                   method: Literal['sum', 'mean'] = 'sum') -> np.ndarray:
     """
-    Collapse phi×theta into omni (method='sum') or pitch-avg (mean).
+    Collapse angular dimensions into omni.
+    Detect which axis corresponds to energy by matching e_len, then sum/mean over the other two.
+    Accepts either (t, e, phi, theta) or (t, phi, theta, e).
     """
     if flux4d.ndim != 4:
-        raise ValueError("FPI burst flux must be 4-D (t,e,phi,theta)")
-    if method == 'sum':
-        return flux4d.sum(axis=(2, 3))
-    return flux4d.mean(axis=(2, 3))
+        raise ValueError("FPI burst flux must be 4-D (t,*,*,*)")
+    # Identify energy axis by length
+    axes = list(range(4))
+    # Assume axis 0 is time
+    cand = [ax for ax in axes[1:] if flux4d.shape[ax] == e_len]
+    if not cand:
+        # fallback: assume axis=1 is energy
+        e_ax = 1
+    else:
+        e_ax = cand[0]
+    # Angular axes = the two non-time, non-energy axes
+    ang_axes = tuple(ax for ax in axes[1:] if ax != e_ax)
+    if method == 'mean':
+        dat2d = flux4d.mean(axis=ang_axes)
+    else:
+        dat2d = flux4d.sum(axis=ang_axes)
+    # Ensure (time, energy) ordering
+    if e_ax == 3:
+        # result shape is (t, e) already after summing ang axes
+        return dat2d
+    if e_ax == 1:
+        return dat2d
+    # If energy axis was 2 before summing (shouldn't happen), transpose accordingly
+    return dat2d
 
 
 def fpi_ion_spectrogram(t: np.ndarray,
@@ -234,7 +259,7 @@ def fpi_ion_spectrogram(t: np.ndarray,
     Ion energy flux (FPI-DIS burst) spectrogram.
     Extra kwargs pass straight to generic_spectrogram().
     """
-    dat2d = _collapse_fpi(flux4d, collapse)
+    dat2d = _collapse_fpi(flux4d, e_len=e.size, collapse=collapse)
     return generic_spectrogram(t, e, dat2d,
                                ylabel='E$_i$ (eV)',
                                title='Ion energy flux',
@@ -247,7 +272,7 @@ def fpi_electron_spectrogram(t: np.ndarray,
                              *,
                              collapse: Literal['sum', 'mean'] = 'sum',
                              **kw):
-    dat2d = _collapse_fpi(flux4d, collapse)
+    dat2d = _collapse_fpi(flux4d, e_len=e.size, collapse=collapse)
     return generic_spectrogram(t, e, dat2d,
                                ylabel='E$_e$ (eV)',
                                title='Electron energy flux',

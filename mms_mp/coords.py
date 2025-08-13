@@ -200,8 +200,8 @@ def hybrid_lmn(b_xyz: np.ndarray,
             Units: km. Required for PySPEDAS fallback and Shue model.
 
         eig_ratio_thresh: Minimum eigenvalue ratio threshold for MVA acceptance.
-            Default: 5.0. Higher values require more well-defined variance.
-            Typical range: 2.0-10.0.
+            Default: 2.0. Higher values require more well-defined variance.
+            Typical range: 2.0–10.0.
 
         cache_key: Optional cache key for repeated calls with same data.
             If provided, results are cached using LRU cache for performance.

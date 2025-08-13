@@ -116,10 +116,17 @@ results/
 
 ## 4  Module Overview
 
+### Physics Units and Conventions
+
+For a concise summary of units, coordinate frames, right‑hand rules, and I/O expectations, see:
+
+- docs/physics-units-and-conventions.md
+
+
 | Module            | Highlight                                                                                  |
 | ----------------- | ------------------------------------------------------------------------------------------ |
 | `data_loader`     | 1-call loader for FGM, FPI, HPCA, EDP, ephemeris + pandas/NumPy friendly output            |
-| `coords`          | `hybrid_lmn()` → returns MVA result if eigen-ratio ≥ 5, else Shue (1997) model normal      |
+| `coords`          | `hybrid_lmn()` → returns MVA result if eigen-ratios ≥ 2 (default), else Shue (1997) model normal |
 | `boundary`        | State-machine uses He⁺ density **and** $B_N$ rotation; hysteresis thresholds avoid noise   |
 | `electric`        | `exb_velocity_sync()` merges E & B to compute drift; `normal_velocity()` blends ExB + bulk |
 | `motion`          | `integrate_disp()` supports trapezoid / Simpson; propagates 1-σ if velocity error supplied |
@@ -153,6 +160,17 @@ python create_mms_spectrograms_2019_01_27.py
 ```bash
 # Create comprehensive multi-spacecraft visualizations
 python create_comprehensive_mms_visualizations_2019_01_27.py
+
+# Focused 12:00 UT quick-look (saves PNGs to results/visualizations)
+python examples/2019_01_27_1200_visualization.py --center 2019-01-27T12:00:00 --minutes 60 \
+  --probes 1 2 3 4 --output-dir results/visualizations
+
+# With overlay of published normal/speed (JSON keys: per_probe.{probe}.n_hat, V_ph_km_s)
+# A template is provided at examples/overlay_published_template.json
+python examples/2019_01_27_1200_visualization.py --overlay-json examples/overlay_published_template.json
+
+# Each per‑probe run saves PNG, CSV, and an HTML viewer to results/visualizations
+# Open the HTML in a browser to inspect images and metadata side‑by‑side.
 ```
 
 **Output files generated:**
