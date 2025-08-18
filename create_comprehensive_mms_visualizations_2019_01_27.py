@@ -28,9 +28,19 @@ from mpl_toolkits.mplot3d import Axes3D
 from datetime import datetime, timedelta
 import warnings
 from typing import Dict, Tuple, Optional, List
+import os
+import glob
+import matplotlib.colors as mcolors
+
+# Optional: real MMS data access for spectrograms
+from pyspedas.projects import mms
+from pytplot import get_data, data_quants
 
 # Import MMS-MP modules
 from mms_mp import data_loader, coords, boundary, electric, multispacecraft, quality, resample
+
+# Time-axis helpers from publication pipeline
+from publication_boundary_analysis import safe_format_time_axis, ensure_datetime_format
 
 # Suppress warnings for cleaner output
 warnings.filterwarnings('ignore')
@@ -398,18 +408,99 @@ def create_plasma_boundary_analysis():
 
 def main():
     """Generate all comprehensive visualizations for the 2019-01-27 event"""
-    
+
     print("COMPREHENSIVE MMS VISUALIZATIONS")
     print("Event: 2019-01-27 12:30:50 UT Magnetopause Crossing")
     print("=" * 80)
     print(f"Started: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    
+
+    # Remove old plots for a clean output directory
+    for f in [
+        'mms_spacecraft_formation_2019_01_27.png',
+        'mms_magnetic_field_analysis_2019_01_27.png',
+        'mms_plasma_boundary_analysis_2019_01_27.png',
+        'mms_combined_publication_2019_01_27.png',
+    ]:
+        try:
+            if os.path.exists(f):
+                os.remove(f)
+        except Exception:
+            pass
+
     # Generate all visualizations
     try:
         create_spacecraft_trajectory_plot()
         B_field, B_lmn, time_minutes = create_magnetic_field_analysis()
         ion_density, ion_temp, he_density, boundary_states, time_minutes = create_plasma_boundary_analysis()
-        
+
+        # Build a combined publication figure (2x3 grid)
+        print("🖼️ Creating combined multi-panel publication figure...")
+        fig = plt.figure(figsize=(22, 12))
+        gs = fig.add_gridspec(2, 3, hspace=0.25, wspace=0.15)
+
+        ax1 = fig.add_subplot(gs[0, 0])
+        img1 = plt.imread('mms_spacecraft_formation_2019_01_27.png')
+        ax1.imshow(img1)
+        ax1.axis('off')
+        ax1.set_title('(a) Spacecraft Formation', loc='left', fontweight='bold')
+
+        ax2 = fig.add_subplot(gs[0, 1])
+        img2 = plt.imread('mms_magnetic_field_analysis_2019_01_27.png')
+        ax2.imshow(img2)
+        ax2.axis('off')
+        ax2.set_title('(b) Magnetic Field Analysis', loc='left', fontweight='bold')
+
+        ax3 = fig.add_subplot(gs[0, 2])
+        img3 = plt.imread('mms_plasma_boundary_analysis_2019_01_27.png')
+        ax3.imshow(img3)
+        ax3.axis('off')
+        ax3.set_title('(c) Plasma and Boundary Analysis', loc='left', fontweight='bold')
+
+        # Boundary threshold overview as a formal panel
+        ax4 = fig.add_subplot(gs[1, 0])
+        if os.path.exists('boundary_threshold_overview.png'):
+            img4 = plt.imread('boundary_threshold_overview.png')
+            ax4.imshow(img4)
+            ax4.axis('off')
+            ax4.set_title('(d) Boundary Threshold Overview', loc='left', fontweight='bold')
+        else:
+            ax4.text(0.5, 0.5, 'Boundary overview not available', transform=ax4.transAxes,
+                     ha='center', va='center', fontsize=14)
+            ax4.axis('off')
+            ax4.set_title('(d) Boundary Threshold Overview', loc='left', fontweight='bold')
+
+        # Ion spectrogram panel
+        ax5 = fig.add_subplot(gs[1, 1])
+        if os.path.exists('fpi_dis_spectrogram.png'):
+            img5 = plt.imread('fpi_dis_spectrogram.png')
+            ax5.imshow(img5)
+            ax5.axis('off')
+            ax5.set_title('(e) Ion Spectrogram (FPI DIS)', loc='left', fontweight='bold')
+        else:
+            ax5.text(0.5, 0.5, 'Ion spectrogram not available', transform=ax5.transAxes,
+                     ha='center', va='center', fontsize=14)
+            ax5.axis('off')
+            ax5.set_title('(e) Ion Spectrogram (FPI DIS)', loc='left', fontweight='bold')
+
+        # Electron spectrogram panel
+        ax6 = fig.add_subplot(gs[1, 2])
+        if os.path.exists('fpi_des_spectrogram.png'):
+            img6 = plt.imread('fpi_des_spectrogram.png')
+            ax6.imshow(img6)
+            ax6.axis('off')
+            ax6.set_title('(f) Electron Spectrogram (FPI DES)', loc='left', fontweight='bold')
+        else:
+            ax6.text(0.5, 0.5, 'Electron spectrogram not available', transform=ax6.transAxes,
+                     ha='center', va='center', fontsize=14)
+            ax6.axis('off')
+            ax6.set_title('(f) Electron Spectrogram (FPI DES)', loc='left', fontweight='bold')
+
+        fig.suptitle('Comprehensive MMS Visualizations — 2019-01-27 12:30:50 UT', fontsize=16, fontweight='bold')
+        plt.tight_layout()
+        fig.savefig('mms_combined_publication_2019_01_27.png', dpi=300, bbox_inches='tight')
+        plt.close(fig)
+        print("   ✅ Combined figure saved: mms_combined_publication_2019_01_27.png")
+
         print("\n" + "=" * 80)
         print("COMPREHENSIVE VISUALIZATION COMPLETE")
         print("=" * 80)
@@ -417,20 +508,11 @@ def main():
         print("  - mms_spacecraft_formation_2019_01_27.png")
         print("  - mms_magnetic_field_analysis_2019_01_27.png")
         print("  - mms_plasma_boundary_analysis_2019_01_27.png")
-        print("  - mms_ion_spectrograms_2019_01_27.png (from previous script)")
-        print("  - mms_electron_spectrograms_2019_01_27.png (from previous script)")
-        print("  - mms_combined_spectrograms_2019_01_27.png (from previous script)")
-        
-        print("\nThese visualizations provide:")
-        print("  • Spacecraft formation and trajectory analysis")
-        print("  • Complete magnetic field analysis (GSM and LMN)")
-        print("  • Plasma parameters and boundary detection")
-        print("  • Ion and electron energy spectrograms")
-        print("  • Multi-spacecraft formation geometry")
-        print("  • Comprehensive magnetopause crossing analysis")
-        
+        print("  - Spectrogram panels: " + ", ".join([p for p in ['fpi_dis_spectrogram.png','fpi_des_spectrogram.png'] if os.path.exists(p)]) )
+        print("  - mms_combined_publication_2019_01_27.png")
+
         return True
-        
+
     except Exception as e:
         print(f"❌ Visualization generation failed: {e}")
         return False

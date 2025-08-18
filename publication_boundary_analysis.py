@@ -26,8 +26,7 @@ from datetime import datetime, timedelta
 import pandas as pd
 from pyspedas.projects import mms
 from pytplot import data_quants, get_data
-from scipy import signal
-from scipy.optimize import minimize
+
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -428,12 +427,21 @@ def detect_boundary_crossings(data, event_dt, probe='1'):
     # Boundary crossing criteria
     crossings = []
     
-    # 1. Magnetic field magnitude changes
-    b_smooth = signal.savgol_filter(b_mag, 51, 3)  # Smooth for trend
+    # 1. Magnetic field magnitude changes (SciPy-free smoothing)
+    def moving_average(x, window=51):
+        w = max(3, min(window, len(x)))
+        if w % 2 == 0:
+            w -= 1
+        if w < 3:
+            return x
+        kernel = np.ones(w) / w
+        return np.convolve(x, kernel, mode='same')
+
+    b_smooth = moving_average(b_mag, 51)
     b_gradient = np.gradient(b_smooth)
-    
+
     # 2. Density changes
-    n_smooth = signal.savgol_filter(n_interp, 51, 3)
+    n_smooth = moving_average(n_interp, 51)
     n_gradient = np.gradient(n_smooth)
     
     # Find significant changes
