@@ -44,6 +44,10 @@ from publication_boundary_analysis import (
 import warnings
 warnings.filterwarnings('ignore')
 
+# ---------- Config (energy caps for low-E focus, in eV) ----------
+ION_LOW_E_MAX = 5000.0
+ELECTRON_LOW_E_MAX = 3000.0
+
 # ---------- Utility functions ----------
 
 def composite_boundary_score(times_b, b_xyz, times_n, n_i, lmn_matrix=None):
@@ -422,7 +426,8 @@ def main():
         if isinstance(dist_res, tuple):
             t_dist, dist = dist_res[0], dist_res[1]
         elif isinstance(dist_res, dict):
-            t_dist, dist = dist_res.get('x'), dist_res.get('y')
+            t_dist = dist_res.get('x') or dist_res.get('times')
+            dist = dist_res.get('y') if dist_res.get('y') is not None else dist_res.get('data')
         else:
             return None
         if t_dist is None or dist is None:
@@ -501,60 +506,80 @@ def main():
                 return None
         return times, np.asarray(energy), spec2d
 
+    def plot_spectrogram(times, energy, spec2d, outname, title, interval_minutes=2, emax=None):
+        fig, ax = plt.subplots(1, 1, figsize=(14, 4))
+        fig.suptitle(title, fontsize=14, fontweight='bold')
+        # Optionally clip to lower-energy focus
+        if emax is not None and np.isfinite(emax):
+            m = (energy <= emax)
+            if np.any(m):
+                energy = energy[m]
+                spec2d = spec2d[:, m]
+        # Time edges
+        Xc = mdates.date2num(times)
+        Xe = np.empty(len(Xc) + 1)
+        if len(Xc) > 1:
+            Xe[1:-1] = 0.5 * (Xc[:-1] + Xc[1:])
+            Xe[0] = Xc[0] - (Xc[1] - Xc[0]) / 2.0
+            Xe[-1] = Xc[-1] + (Xc[-1] - Xc[-2]) / 2.0
+        else:
+            Xe[:] = [Xc[0] - 1.0/1440, Xc[0] + 1.0/1440]
+        # Energy edges (geometric if strongly log-spaced)
+        En = np.asarray(energy)
+        Ee = np.empty(En.size + 1)
+        if En.size > 1 and np.all(En > 0) and (np.max(En)/max(np.min(En),1e-9) > 50):
+            Ee[1:-1] = np.sqrt(En[:-1] * En[1:])
+            Ee[0] = En[0]**2 / Ee[1]
+            Ee[-1] = En[-1]**2 / Ee[-2]
+        else:
+            Ee[1:-1] = 0.5 * (En[:-1] + En[1:]) if En.size > 1 else En[0]
+            Ee[0] = En[0] - (En[1] - En[0]) / 2.0 if En.size > 1 else En[0] - 1.0
+            Ee[-1] = En[-1] + (En[-1] - En[-2]) / 2.0 if En.size > 1 else En[-1] + 1.0
+        # Color scaling
+        vmin = np.nanpercentile(spec2d, 5)
+        vmax = np.nanpercentile(spec2d, 99)
+        pcm = ax.pcolormesh(Xe, Ee, spec2d.T, shading='auto', cmap='viridis',
+                            norm=mcolors.LogNorm(vmin=max(vmin, 1e-2), vmax=max(vmax, 1.0)))
+        cbar = fig.colorbar(pcm, ax=ax, pad=0.01)
+        cbar.set_label('Flux / Counts (arb.)')
+        ax.set_ylabel('Energy (eV)')
+        safe_format_time_axis(ax, interval_minutes=interval_minutes)
+        ax.set_xlabel('Time (UT)')
+        plt.tight_layout()
+        plt.savefig(outname, dpi=300, bbox_inches='tight', facecolor='white')
+        plt.close()
+
     try:
         # Explicitly load FPI distribution data for spectrograms; fallback to build if omni missing
         for species in ['dis', 'des']:
             sp_name = {'dis': 'Ion', 'des': 'Electron'}[species]
-            try:
-                mms.mms_load_fpi(trange=trange, probe='1', data_rate='brst', level='l2',
-                                 datatype=f'{species}-dist', time_clip=True)
-            except Exception as e:
-                print(f"   ⚠️ Could not load FPI {sp_name} distributions: {e}")
-                continue
+            # Per-species lower energy focus (eV)
+            lowE_focus = {'dis': 5000.0, 'des': 3000.0}[species]
+            for probe in ['1', '2', '3', '4']:
+                try:
+                    mms.mms_load_fpi(trange=trange, probe=probe, data_rate='brst', level='l2',
+                                     datatype=f'{species}-dist', time_clip=True)
+                except Exception as e:
+                    print(f"   ⚠️ Could not load FPI {sp_name} distributions for MMS{probe}: {e}")
+                    continue
 
-            e_var = f'mms1_{species}_energyspectr_omni_brst'
-            spec = extract_spectrogram(e_var)
-            if spec is None:
-                spec = build_spectrogram_from_dist(species, probe='1')
-            if spec is not None:
+                e_var = f'mms{probe}_{species}_energyspectr_omni_brst'
+                spec = extract_spectrogram(e_var)
+                if spec is None:
+                    spec = build_spectrogram_from_dist(species, probe=probe)
+                if spec is None:
+                    print(f"   ⚠️ No spectrogram available for MMS{probe} {sp_name}")
+                    continue
                 times, energy, spec2d = spec
-                fig, ax = plt.subplots(1, 1, figsize=(14, 4))
-                fig.suptitle(f'FPI {sp_name} Energy-Time Spectrogram (MMS1)', fontsize=14, fontweight='bold')
-                # Build bin edges for pcolormesh (centers -> edges)
-                Xc = mdates.date2num(times)
-                Xe = np.empty(len(Xc) + 1)
-                if len(Xc) > 1:
-                    Xe[1:-1] = 0.5 * (Xc[:-1] + Xc[1:])
-                    Xe[0] = Xc[0] - (Xc[1] - Xc[0]) / 2.0
-                    Xe[-1] = Xc[-1] + (Xc[-1] - Xc[-2]) / 2.0
-                else:
-                    Xe[:] = [Xc[0] - 1.0/1440, Xc[0] + 1.0/1440]
-                En = np.asarray(energy)
-                if En.size > 1 and np.all(En > 0) and (np.max(En)/max(np.min(En),1e-9) > 50):
-                    Ee = np.empty(En.size + 1)
-                    Ee[1:-1] = np.sqrt(En[:-1] * En[1:])
-                    Ee[0] = En[0]**2 / Ee[1]
-                    Ee[-1] = En[-1]**2 / Ee[-2]
-                else:
-                    Ee = np.empty(En.size + 1)
-                    if En.size > 1:
-                        Ee[1:-1] = 0.5 * (En[:-1] + En[1:])
-                        Ee[0] = En[0] - (En[1] - En[0]) / 2.0
-                        Ee[-1] = En[-1] + (En[-1] - En[-2]) / 2.0
-                    else:
-                        Ee[:] = [En[0] - 1.0, En[0] + 1.0]
-                vmin = np.nanpercentile(spec2d, 5)
-                vmax = np.nanpercentile(spec2d, 99)
-                pcm = ax.pcolormesh(Xe, Ee, spec2d.T, shading='auto', cmap='viridis',
-                                    norm=mcolors.LogNorm(vmin=max(vmin, 1e-2), vmax=max(vmax, 1.0)))
-                cbar = fig.colorbar(pcm, ax=ax, pad=0.01)
-                cbar.set_label('Flux / Counts (arb.)')
-                ax.set_ylabel('Energy')
-                safe_format_time_axis(ax, interval_minutes=2)
-                ax.set_xlabel('Time (UT)')
-                plt.tight_layout()
-                plt.savefig(f'fpi_{species}_spectrogram.png', dpi=300, bbox_inches='tight', facecolor='white')
-                plt.close()
+                # Always save full-range and low-energy focused versions
+                plot_spectrogram(times, energy, spec2d,
+                                 outname=f'fpi_{species}_spectrogram_full_mms{probe}.png',
+                                 title=f'FPI {sp_name} Spectrogram (Full) — MMS{probe}',
+                                 interval_minutes=2, emax=None)
+                plot_spectrogram(times, energy, spec2d,
+                                 outname=f'fpi_{species}_spectrogram_lowE_mms{probe}.png',
+                                 title=f'FPI {sp_name} Spectrogram (≤{int(lowE_focus)} eV) — MMS{probe}',
+                                 interval_minutes=2, emax=lowE_focus)
     except Exception as e:
         print(f"   ⚠️ FPI spectrogram warning: {e}")
 
