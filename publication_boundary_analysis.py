@@ -22,8 +22,16 @@ Scientific Focus:
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import pandas as pd
+import warnings
+
+# Force matplotlib to use UTC for all date formatting
+plt.rcParams['timezone'] = 'UTC'
+# Suppress benign pandas conversion warning
+warnings.filterwarnings('ignore', message='Discarding nonzero nanoseconds')
+
+_UTC_LOGGED = False
 from pyspedas.projects import mms
 from pytplot import data_quants, get_data
 
@@ -92,25 +100,36 @@ def safe_decimate_data(times, data, max_points=2000):
     return times[::step], data[::step] if data.ndim > 1 else data[::step]
 
 def ensure_datetime_format(times):
-    """Ensure times are in proper datetime format for matplotlib"""
+    """Ensure times are in proper datetime format (UTC) for matplotlib and storage"""
+    global _UTC_LOGGED
     if len(times) == 0:
         return times
 
-    # Check if already datetime objects
+    # If already datetime-like, enforce UTC tzinfo
     if hasattr(times[0], 'strftime'):
-        return times
+        try:
+            out = [t if t.tzinfo is not None else t.replace(tzinfo=timezone.utc) for t in times]
+            if not _UTC_LOGGED:
+                print("   🕒 Normalizing datetimes to UTC (tz-aware)")
+                _UTC_LOGGED = True
+            return out
+        except Exception:
+            return times
 
-    # Convert from various formats to datetime
+    # Convert from various formats to datetime (UTC)
     try:
         if hasattr(times[0], 'timestamp'):
-            # Convert from pandas timestamp or similar
-            return pd.to_datetime(times)
+            dt = pd.to_datetime(times, utc=True)
         elif isinstance(times[0], (int, float)):
-            # Convert from unix timestamp
-            return pd.to_datetime(times, unit='s')
+            dt = pd.to_datetime(times, unit='s', utc=True)
         else:
-            # Try pandas conversion
-            return pd.to_datetime(times)
+            dt = pd.to_datetime(times, utc=True)
+        # Convert pandas timestamps to python datetimes with UTC tzinfo
+        out = [d.to_pydatetime().replace(tzinfo=timezone.utc) for d in dt]
+        if not _UTC_LOGGED:
+            print("   🕒 Normalizing datetimes to UTC (tz-aware)")
+            _UTC_LOGGED = True
+        return out
     except Exception as e:
         print(f"   ⚠️ Time conversion warning: {e}")
         return times

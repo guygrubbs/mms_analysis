@@ -259,7 +259,7 @@ def fpi_ion_spectrogram(t: np.ndarray,
     Ion energy flux (FPI-DIS burst) spectrogram.
     Extra kwargs pass straight to generic_spectrogram().
     """
-    dat2d = _collapse_fpi(flux4d, e_len=e.size, collapse=collapse)
+    dat2d = _collapse_fpi(flux4d, e_len=e.size, method=collapse)
     return generic_spectrogram(t, e, dat2d,
                                ylabel='E$_i$ (eV)',
                                title='Ion energy flux',
@@ -272,7 +272,7 @@ def fpi_electron_spectrogram(t: np.ndarray,
                              *,
                              collapse: Literal['sum', 'mean'] = 'sum',
                              **kw):
-    dat2d = _collapse_fpi(flux4d, e_len=e.size, collapse=collapse)
+    dat2d = _collapse_fpi(flux4d, e_len=e.size, method=collapse)
     return generic_spectrogram(t, e, dat2d,
                                ylabel='E$_e$ (eV)',
                                title='Electron energy flux',

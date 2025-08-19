@@ -25,7 +25,7 @@ import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 import matplotlib.ticker as ticker
 import pandas as pd
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import matplotlib.colors as mcolors
 
 from pyspedas.projects import mms
@@ -131,7 +131,7 @@ def detect_crossings(times, score, threshold=0.4, min_separation_s=10):
     last_t = -np.inf
     for i in idx:
         if t[i] - last_t >= min_separation_s:
-            crossings.append(datetime.fromtimestamp(t[i]))
+            crossings.append(datetime.fromtimestamp(t[i], tz=timezone.utc))
             last_t = t[i]
     return crossings
 
@@ -195,9 +195,15 @@ def estimate_normal_speed(delays_s, positions_km, normal_vec, ref='1'):
     return vn
 
 def mean_vector_in_window(times, vec, center_dt, half_width_s=30):
-    """Mean vector around a center time ± half_width_s."""
+    """Mean vector around a center time ± half_width_s.
+    center_dt should be timezone-aware UTC; if naïve, assume UTC.
+    """
+    if hasattr(center_dt, 'tzinfo') and center_dt.tzinfo is None:
+        center_dt = center_dt.replace(tzinfo=timezone.utc)
     if hasattr(times[0], 'timestamp'):
-        t = np.array([ti.timestamp() for ti in times])
+        # Ensure times are UTC-aware
+        tt = [ti if getattr(ti, 'tzinfo', None) is not None else ti.replace(tzinfo=timezone.utc) for ti in times]
+        t = np.array([ti.timestamp() for ti in tt])
     else:
         t = np.asarray(times)
     c = center_dt.timestamp()
@@ -219,11 +225,23 @@ def main():
     parser.add_argument('--end', default='2019-01-27/12:50:00')
     parser.add_argument('--ion-emax', type=float, default=float(os.getenv('ION_LOW_E_MAX', ION_LOW_E_MAX)))
     parser.add_argument('--electron-emax', type=float, default=float(os.getenv('ELECTRON_LOW_E_MAX', ELECTRON_LOW_E_MAX)))
+    # PDF inclusion controls
+    parser.add_argument('--include-grids', dest='include_grids', action='store_true')
+    parser.add_argument('--no-grids', dest='include_grids', action='store_false')
+    parser.add_argument('--include-combined', dest='include_combined', action='store_true')
+    parser.add_argument('--no-combined', dest='include_combined', action='store_false')
+    parser.set_defaults(include_grids=True, include_combined=True)
+    # Diagnostics controls
+    parser.add_argument('--diagnostics-only-pdf', dest='diagnostics_only_pdf', action='store_true', help='Export a standalone diagnostics PDF')
+    parser.add_argument('--diag-filter-species', default='', help='Filter diagnostics by species (e.g., dis or des)')
+    parser.add_argument('--diag-filter-probe', default='', help='Filter diagnostics by probe number (1..4)')
+    parser.add_argument('--diag-filter-status', default='', help='Filter diagnostics by status (e.g., COVERAGE)')
+    parser.add_argument('--diag-summarize', dest='diag_summarize', action='store_true', help='Print diagnostics summary to stdout after generation')
     args = parser.parse_args()
 
     # Analysis window
     trange = [args.start, args.end]
-    event_dt = datetime(2019, 1, 27, 12, 30, 50)
+    event_dt = datetime(2019, 1, 27, 12, 30, 50, tzinfo=timezone.utc)
 
     # Override module-level caps from CLI if provided
     globals()['ION_LOW_E_MAX'] = args.ion_emax
@@ -300,7 +318,7 @@ def main():
     # Scores over time for all spacecraft
     for p in ['1', '2', '3', '4']:
         if p in scores:
-            t_plot = ensure_datetime_format([datetime.fromtimestamp(tt) for tt in btimes[p]])
+            t_plot = ensure_datetime_format([datetime.fromtimestamp(tt, tz=timezone.utc) for tt in btimes[p]])
             axes[0].plot(t_plot, scores[p], color=colors[p], label=f'MMS{p}', linewidth=1.2)
     axes[0].axhline(threshold, color='red', linestyle='--', linewidth=1.5, label='Threshold 0.4')
     for ax in axes:
@@ -366,10 +384,89 @@ def main():
     plt.close()
 
     # ---------- Plot 3: FPI spectrograms (ion & electron if available) ----------
-    def extract_spectrogram(varname):
-        if varname not in data_quants:
+    def find_var(keys, probe, species, must_include=None, also_include=None):
+        """Find a tplot variable name in keys for a given probe/species with substrings.
+        Returns the first best match or None.
+        """
+        must_include = must_include or []
+        also_include = also_include or []
+        candidates = []
+        prefix = f'mms{probe}_{species}_'
+        for k in keys:
+            if not k.startswith(prefix):
+                continue
+            ok = all(s in k for s in must_include)
+            if ok and all(s in k for s in also_include):
+                candidates.append(k)
+        # fallback: relax also_include
+        if not candidates and also_include:
+            for k in keys:
+                if not k.startswith(prefix):
+                    continue
+                if all(s in k for s in must_include):
+                    candidates.append(k)
+        return candidates[0] if candidates else None
+
+    # For diagnostics
+    spectro_diag_rows = []
+
+    def record_var_coverage(varname, species, probe, status_tag):
+        try:
+            res = get_data(varname)
+            if isinstance(res, tuple):
+                t = res[0]
+            elif isinstance(res, dict) and 'x' in res:
+                t = res['x']
+            else:
+                t = None
+            if t is not None and len(t) > 0:
+                if hasattr(t[0], 'timestamp'):
+                    times = [ti if getattr(ti, 'tzinfo', None) is not None else ti.replace(tzinfo=timezone.utc) for ti in t]
+                else:
+                    times = [datetime.fromtimestamp(tt, tz=timezone.utc) for tt in t]
+                t_start = times[0].strftime('%Y-%m-%d %H:%M:%S')
+                t_end = times[-1].strftime('%Y-%m-%d %H:%M:%S')
+                spectro_diag_rows.append([species, probe, varname, '', '', status_tag, t_start, t_end, len(times)])
+            else:
+                spectro_diag_rows.append([species, probe, varname, '', '', status_tag, '', '', 0])
+        except Exception:
+            spectro_diag_rows.append([species, probe, varname, '', '', status_tag, '', '', ''])
+
+    def _match_confidence(name: str, status: str) -> str:
+        if not name:
+            return ''
+        n = name.lower()
+        if 'energyspectr' in n and 'omni' in n and 'brst' in n:
+            return 'high'
+        if 'energyspectr' in n and ('omni' in n or 'brst' in n):
+            return 'medium'
+        if any(k in n for k in ['dist', 'distribution', 'energy']):
+            return 'medium'
+        # Otherwise low
+        return 'low'
+
+    def extract_spectrogram(varname, probe=None, species=None):
+        # Try exact var, else search alternates if probe/species provided
+        name = varname
+        tried = [varname]
+        if name not in data_quants and probe and species:
+            # Try searching for other omni spectrogram names
+            keys = list(data_quants.keys())
+            # energyspectr_omni can vary: 'energyspectr_omni_brst', 'energyspectr_brst_omni', etc.
+            cand = find_var(keys, probe, species,
+                            must_include=['energyspectr'], also_include=['omni','brst'])
+            if cand is None:
+                cand = find_var(keys, probe, species, must_include=['energyspectr'])
+            if cand is not None:
+                name = cand
+                tried.append(cand)
+                record_var_coverage(name, species, probe, 'CANDIDATE_COVERAGE')
+        if name not in data_quants:
+            spectro_diag_rows.append([species, probe, ';'.join(tried), '', '', 'NOT_FOUND', '', '', ''])
             return None
-        res = get_data(varname)
+        # Record coverage for chosen omni spectrogram
+        record_var_coverage(name, species, probe, 'OMNI_COVERAGE')
+        res = get_data(name)
         # Handle multiple return formats from pytplot.get_data
         if isinstance(res, tuple):
             if len(res) == 2:
@@ -402,6 +499,7 @@ def main():
         # Determine energy bins
         if v is None:
             energy = np.arange(data2d.shape[1])
+            spectro_diag_rows.append([species, probe, name, '', f'imputed:{len(energy)}bins', 'OMNI_NO_ENERGY_VECTOR'])
         else:
             energy = np.array(v)
             # If v is 2D (Nt, Ne), take first row or median across time
@@ -429,13 +527,34 @@ def main():
 
     def build_spectrogram_from_dist(species: str, probe: str = '1'):
         """Fallback: build time×energy spectrogram by averaging the distribution over angles.
-        Expects dist var mms{probe}_{species}_dist_brst and energy var mms{probe}_{species}_energy_brst.
+        Accepts multiple variable name variants.
         Returns (times_datetime, energy_1d, spec2d) or None.
         """
-        dist_var = f'mms{probe}_{species}_dist_brst'
-        en_var = f'mms{probe}_{species}_energy_brst'
-        if dist_var not in data_quants or en_var not in data_quants:
+        # Try known dist var names
+        dist_names = [
+            f'mms{probe}_{species}_dist_brst',
+            f'mms{probe}_{species}_dist',
+            f'mms{probe}_{species}_distribution_brst',
+            f'mms{probe}_{species}_dist_omni_brst',
+        ]
+        en_names = [
+            f'mms{probe}_{species}_energy_brst',
+            f'mms{probe}_{species}_energy',
+            f'mms{probe}_{species}_en_brst',
+        ]
+        dist_var = next((n for n in dist_names if n in data_quants), None)
+        en_var = next((n for n in en_names if n in data_quants), None)
+        # Try search if not found
+        if dist_var is None:
+            dist_var = find_var(list(data_quants.keys()), probe, species, must_include=['dist'])
+        if en_var is None:
+            en_var = find_var(list(data_quants.keys()), probe, species, must_include=['energy'])
+        if dist_var is None or en_var is None:
+            spectro_diag_rows.append([species, probe, dist_var or '', en_var or '', '', 'MISSING_DIST_OR_ENERGY'])
             return None
+        # Record coverage of dist and energy vars
+        record_var_coverage(dist_var, species, probe, 'DIST_COVERAGE')
+        record_var_coverage(en_var, species, probe, 'ENERGY_COVERAGE')
         # Get distribution
         dist_res = get_data(dist_var)
         if isinstance(dist_res, tuple):
@@ -458,7 +577,7 @@ def main():
         else:
             en = None
         if en is None:
-            # Infer energy axis by dimension matching later
+            # Infer energy axis by dimension matching later or use metadata defaults
             energy = None
         else:
             en = np.asarray(en)
@@ -474,6 +593,14 @@ def main():
                     energy = np.nanmedian(en, axis=0)
                 except Exception:
                     energy = None
+        # If still missing energy, construct a plausible energy vector
+        if energy is None:
+            # Construct a log-spaced vector representing typical FPI ranges
+            if species == 'dis':
+                energy = np.geomspace(10, 30000, 32)  # ions ~10 eV to 30 keV
+            else:
+                energy = np.geomspace(5, 30000, 32)   # electrons ~5 eV to 30 keV
+            spectro_diag_rows.append([species, probe, dist_var, en_var, f'imputed:{len(energy)}bins', 'IMPUTED_ENERGY_VECTOR'])
         # Identify axes: assume time is axis 0 if matches
         time_axis = 0 if dist.shape[0] == len(times) else None
         if time_axis is None:
@@ -553,7 +680,9 @@ def main():
         # Color scaling
         vmin = np.nanpercentile(spec2d, 5)
         vmax = np.nanpercentile(spec2d, 99)
-        pcm = ax.pcolormesh(Xe, Ee, spec2d.T, shading='auto', cmap='viridis',
+        # Handle non-positive values for log
+        spec_plot = np.where(spec2d <= 0, np.nan, spec2d)
+        pcm = ax.pcolormesh(Xe, Ee, spec_plot.T, shading='auto', cmap='viridis',
                             norm=mcolors.LogNorm(vmin=max(vmin, 1e-2), vmax=max(vmax, 1.0)))
         cbar = fig.colorbar(pcm, ax=ax, pad=0.01)
         cbar.set_label('Flux / Counts (arb.)')
@@ -586,6 +715,13 @@ def main():
                     print(f"   ⚠️ No spectrogram available for MMS{probe} {sp_name}")
                     continue
                 times, energy, spec2d = spec
+                # Add UT coverage to diagnostics
+                try:
+                    t_start = times[0].strftime('%Y-%m-%d %H:%M:%S') if len(times) else ''
+                    t_end = times[-1].strftime('%Y-%m-%d %H:%M:%S') if len(times) else ''
+                    spectro_diag_rows.append([species, probe, e_var, '', f'{len(energy)}bins', 'COVERAGE', t_start, t_end, len(times)])
+                except Exception:
+                    pass
                 # Always save full-range and low-energy focused versions
                 plot_spectrogram(times, energy, spec2d,
                                  outname=f'fpi_{species}_spectrogram_full_mms{probe}.png',
@@ -601,8 +737,16 @@ def main():
     # ---------- Plot 4: MMS3 shear angles ----------
     if '3' in data and 'B_gsm' in data['3']:
         times3, b3 = data['3']['B_gsm']
-        sheath_times = [datetime(2019,1,27,12,18,0), datetime(2019,1,27,12,30,50), datetime(2019,1,27,12,45,0)]
-        sphere_times = [datetime(2019,1,27,12,22,0), datetime(2019,1,27,12,33,0), datetime(2019,1,27,12,40,0)]
+        sheath_times = [
+            datetime(2019,1,27,12,18,0, tzinfo=timezone.utc),
+            datetime(2019,1,27,12,30,50, tzinfo=timezone.utc),
+            datetime(2019,1,27,12,45,0, tzinfo=timezone.utc),
+        ]
+        sphere_times = [
+            datetime(2019,1,27,12,22,0, tzinfo=timezone.utc),
+            datetime(2019,1,27,12,33,0, tzinfo=timezone.utc),
+            datetime(2019,1,27,12,40,0, tzinfo=timezone.utc),
+        ]
 
         angles = []
         for sh, sp in zip(sheath_times, sphere_times):
@@ -631,6 +775,72 @@ def main():
 
     # ---------- Export CSV/JSON summary ----------
     import json, csv
+
+    # Spectrogram diagnostics CSV (what variables found/used; UT coverage)
+    try:
+        # extend rows with UT coverage; also include analysis window overlap
+        from datetime import datetime
+        tr_start = datetime.strptime(args.start.replace('/', ' '), '%Y-%m-%d %H:%M:%S')
+        tr_end = datetime.strptime(args.end.replace('/', ' '), '%Y-%m-%d %H:%M:%S')
+        with open('spectrogram_diagnostics.csv', 'w', newline='') as df:
+            dw = csv.writer(df)
+            dw.writerow(['species', 'probe', 'candidate_or_dist_var', 'energy_var', 'energy_info', 'status', 't_start_UT', 't_end_UT', 'n_times', 'overlaps_window', 'match_confidence'])
+            for row in spectro_diag_rows:
+                # pad with blanks for coverage fields
+                if len(row) < 9:
+                    row = row + ['', '', '']
+                # compute overlap and match confidence if possible
+                t0, t1 = row[6], row[7]
+                overlaps = ''
+                try:
+                    if t0 and t1:
+                        dt0 = datetime.strptime(t0, '%Y-%m-%d %H:%M:%S')
+                        dt1 = datetime.strptime(t1, '%Y-%m-%d %H:%M:%S')
+                        overlaps = 'Y' if (dt1 >= tr_start and dt0 <= tr_end) else 'N'
+                except Exception:
+                    overlaps = ''
+                # append overlap and confidence
+                cand = row[2] if len(row) > 2 else ''
+                conf = _match_confidence(cand, row[5] if len(row) > 5 else '')
+                row_out = row[:9] + [overlaps, conf]
+                dw.writerow(row_out)
+        print(f"   ⚠️ Could not write spectrogram_diagnostics.csv: {e}")
+
+    except Exception as e:
+    # Optional: print filtered diagnostics summary and write filtered CSV
+    if args.diag_summarize or args.diag_filter_species or args.diag_filter_probe or args.diag_filter_status:
+        try:
+            import pandas as pd
+            if os.path.exists('spectrogram_diagnostics.csv'):
+                diag = pd.read_csv('spectrogram_diagnostics.csv')
+                filt = diag.copy()
+                if args.diag_filter_species:
+                    filt = filt[filt['species'].astype(str).str.lower() == args.diag_filter_species.lower()]
+                if args.diag_filter_probe:
+                    filt = filt[filt['probe'].astype(str) == str(args.diag_filter_probe)]
+                if args.diag_filter_status:
+                    filt = filt[filt['status'].astype(str).str.upper() == args.diag_filter_status.upper()]
+                # Console summary
+                if args.diag_summarize:
+                    print('\nDiagnostics summary (filtered):')
+                    if len(filt) == 0:
+                        print('  No rows after filters')
+                    else:
+                        by_status = filt.groupby('status').size().reset_index(name='count')
+                        for _, r in by_status.iterrows():
+                            print(f"  {r['status']}: {r['count']}")
+                        if 'match_confidence' in filt.columns:
+                            by_conf = filt.groupby('match_confidence').size().reset_index(name='count')
+                            print('  Confidence tiers:')
+                            for _, r in by_conf.iterrows():
+                                print(f"    {r['match_confidence']}: {r['count']}")
+                # Write filtered CSV for convenience
+                out_cols = [c for c in ['species','probe','candidate_or_dist_var','energy_var','energy_info','status','t_start_UT','t_end_UT','n_times','overlaps_window','match_confidence'] if c in filt.columns]
+                filt[out_cols].to_csv('spectrogram_diagnostics_filtered.csv', index=False)
+        except Exception as e:
+            print(f"   ⚠️ Could not produce filtered diagnostics: {e}")
+
+        print(f"   ⚠️ Could not write spectrogram_diagnostics.csv: {e}")
     # Build per-pair delays and Vn projections for CSV
     pairs = []
     for p in ['2', '3', '4']:
@@ -656,7 +866,7 @@ def main():
             for dt in cts:
                 w.writerow([f'MMS{p}', dt.strftime('%Y-%m-%d %H:%M:%S')])
 
-    # CSV with per-pair delays relative to MMS1 and Vn
+    # CSV with per-pair delays relative to MMS1 and Vn (and MVA metrics)
     with open('boundary_delays_vn.csv', 'w', newline='') as cf:
         w = csv.writer(cf)
         w.writerow(['pair', 'delay_s'])
@@ -664,15 +874,174 @@ def main():
             w.writerow([name, f'{dt:.3f}'])
         w.writerow([])
         w.writerow(['Vn (km/s)', f'{vn:.3f}' if np.isfinite(vn) else 'NaN'])
+        if mva_results is not None:
+            nx, ny, nz = mva_results['normal']
+            l21, l32 = mva_results['lambda_ratios']
+            qual = mva_results.get('quality', '')
+            w.writerow(['MVA_normal_x', f'{nx:.4f}'])
+            w.writerow(['MVA_normal_y', f'{ny:.4f}'])
+            w.writerow(['MVA_normal_z', f'{nz:.4f}'])
+            w.writerow(['lambda2_over_lambda1', f'{l21:.3f}'])
+            w.writerow(['lambda3_over_lambda2', f'{l32:.3f}'])
+            w.writerow(['MVA_quality', qual])
 
-    # ---------- Assemble a single PDF with key figures ----------
+    # Consolidated CSV: delays, Vn, duration, thickness, first crossings, and MVA metrics
+    with open('boundary_consolidated.csv', 'w', newline='') as cf:
+        w = csv.writer(cf)
+        headers = [
+            'pair', 'delay_s', 'Vn_km_per_s', 'duration_s', 'thickness_km',
+            'MMS1_crossing', 'MMS2_crossing', 'MMS3_crossing', 'MMS4_crossing',
+            'MVA_normal_x', 'MVA_normal_y', 'MVA_normal_z', 'lambda2_over_lambda1', 'lambda3_over_lambda2', 'MVA_quality'
+        ]
+        w.writerow(headers)
+        # delays in MMS1-MMS2, MMS1-MMS3, MMS1-MMS4 order
+        delays_ordered = [dict(pairs).get('MMS1-MMS2', np.nan), dict(pairs).get('MMS1-MMS3', np.nan), dict(pairs).get('MMS1-MMS4', np.nan)]
+        c1 = crossings.get('1', [])
+        c2 = crossings.get('2', [])
+        c3 = crossings.get('3', [])
+        c4 = crossings.get('4', [])
+        first = lambda L: L[0].strftime('%Y-%m-%d %H:%M:%S') if L else ''
+        nx = ny = nz = l21 = l32 = np.nan
+        qual = ''
+        if mva_results is not None:
+            nx, ny, nz = mva_results['normal']
+            l21, l32 = mva_results['lambda_ratios']
+            qual = mva_results.get('quality', '')
+        w.writerow([
+            'ALL',
+            ';'.join([f'{d:.3f}' if np.isfinite(d) else 'NaN' for d in delays_ordered]),
+            f'{vn:.3f}' if np.isfinite(vn) else 'NaN',
+            f'{duration_s:.1f}' if np.isfinite(duration_s) else 'NaN',
+            f'{thickness_km:.0f}' if np.isfinite(thickness_km) else 'NaN',
+            first(c1), first(c2), first(c3), first(c4),
+            f'{nx:.4f}' if np.isfinite(nx) else 'NaN',
+            f'{ny:.4f}' if np.isfinite(ny) else 'NaN',
+            f'{nz:.4f}' if np.isfinite(nz) else 'NaN',
+            f'{l21:.3f}' if np.isfinite(l21) else 'NaN',
+            f'{l32:.3f}' if np.isfinite(l32) else 'NaN',
+            qual
+        ])
+
+    # ---------- Assemble a single PDF with key figures and per-MMS grids ----------
     try:
         with PdfPages('mms_2019_01_27_publication_bundle.pdf') as pdf:
-            for f in [
+            # Diagnostics page: quick summary
+            try:
+                import pandas as pd
+                if os.path.exists('spectrogram_diagnostics.csv'):
+                    diag = pd.read_csv('spectrogram_diagnostics.csv')
+                    # Summary counts page
+                    fig, ax = plt.subplots(figsize=(11, 8.5))
+                    ax.axis('off')
+                    ax.set_title('Spectrogram Diagnostics (Summary)', fontsize=14, fontweight='bold')
+                    summary = diag.groupby(['species','probe','status']).size().reset_index(name='count')
+                    text = 'Status counts by species/probe:\n\n' + '\n'.join(
+                        f"{r.species}/MMS{r.probe}: {r.status} = {r['count']}" for _, r in summary.iterrows()
+                    )
+                    # Confidence breakdown
+                    if 'match_confidence' in diag.columns:
+                        by_conf = diag.groupby('match_confidence').size().reset_index(name='count')
+                        text += '\n\nConfidence tiers:\n' + '\n'.join(
+                            f"{r.match_confidence}: {r['count']}" for _, r in by_conf.iterrows()
+                        )
+                    ax.text(0.01, 0.98, text, va='top', ha='left', family='monospace')
+                    pdf.savefig(fig, bbox_inches='tight')
+                    plt.close(fig)
+                    # Detailed table page only if we have rows
+                    if len(diag) > 0:
+                        cols = ['species','probe','candidate_or_dist_var','status','t_start_UT','t_end_UT','n_times','overlaps_window']
+                        # Gracefully limit columns if missing
+                        cols = [c for c in cols if c in diag.columns]
+                        sub = diag[cols].copy()
+                        sub['probe'] = sub['probe'].astype(str)
+                        # Sort rows for easy scanning
+                        sort_cols = [c for c in ['species','probe','status','t_start_UT'] if c in sub.columns]
+                        if sort_cols:
+                            sub = sub.sort_values(sort_cols)
+                        max_rows = 30
+                        shown = sub.head(max_rows)
+                        fig, ax = plt.subplots(figsize=(11, 8.5))
+    # ---------- Optionally assemble a standalone diagnostics PDF ----------
+    if args.diagnostics_only_pdf:
+        try:
+            if os.path.exists('spectrogram_diagnostics.csv'):
+                import pandas as pd
+                diag = pd.read_csv('spectrogram_diagnostics.csv')
+                with PdfPages('spectrogram_diagnostics_report.pdf') as dpdf:
+                    # Summary
+                    fig, ax = plt.subplots(figsize=(11, 8.5))
+                    ax.axis('off')
+                    ax.set_title('Spectrogram Diagnostics (Summary)', fontsize=14, fontweight='bold')
+                    if len(diag) > 0:
+                        summary = diag.groupby(['species','probe','status']).size().reset_index(name='count')
+                        text = 'Status counts by species/probe:\n\n' + '\n'.join(
+                            f"{r.species}/MMS{r.probe}: {r.status} = {r['count']}" for _, r in summary.iterrows()
+                        )
+                        if 'match_confidence' in diag.columns:
+                            by_conf = diag.groupby('match_confidence').size().reset_index(name='count')
+                            text += '\n\nConfidence tiers:\n' + '\n'.join(
+                                f"{r.match_confidence}: {r['count']}" for _, r in by_conf.iterrows()
+                            )
+                    else:
+                        text = 'No diagnostics rows.'
+                    ax.text(0.01, 0.98, text, va='top', ha='left', family='monospace')
+                    dpdf.savefig(fig, bbox_inches='tight')
+                    plt.close(fig)
+                    # Detailed (with filters applied if provided)
+                    if len(diag) > 0:
+                        filt = diag.copy()
+                        if args.diag_filter_species:
+                            filt = filt[filt['species'].astype(str).str.lower() == args.diag_filter_species.lower()]
+                        if args.diag_filter_probe:
+                            filt = filt[filt['probe'].astype(str) == str(args.diag_filter_probe)]
+                        if args.diag_filter_status:
+                            filt = filt[filt['status'].astype(str).str.upper() == args.diag_filter_status.upper()]
+                        cols = ['species','probe','candidate_or_dist_var','status','t_start_UT','t_end_UT','n_times','overlaps_window','match_confidence']
+                        cols = [c for c in cols if c in filt.columns]
+                        if len(filt) > 0 and cols:
+                            sort_cols = [c for c in ['species','probe','status','t_start_UT'] if c in filt.columns]
+                            if sort_cols:
+                                filt = filt.sort_values(sort_cols)
+                            shown = filt[cols].head(30)
+                            fig, ax = plt.subplots(figsize=(11, 8.5))
+                            ax.axis('off')
+                            ax.set_title('Spectrogram Diagnostics (Detailed)', fontsize=14, fontweight='bold')
+                            table = ax.table(cellText=shown.values,
+                                             colLabels=[c.replace('_',' ') for c in cols],
+                                             loc='upper left', cellLoc='left')
+                            table.auto_set_font_size(False)
+                            table.set_fontsize(8)
+                            table.scale(1, 1.2)
+                            if len(filt) > len(shown):
+                                ax.text(0.01, 0.02, f"… {len(filt)-len(shown)} additional rows omitted", fontsize=9)
+                            dpdf.savefig(fig, bbox_inches='tight')
+                            plt.close(fig)
+        except Exception as e:
+            print(f"   ⚠️ Could not build diagnostics-only PDF: {e}")
+
+                        ax.axis('off')
+                        ax.set_title('Spectrogram Diagnostics (Detailed)', fontsize=14, fontweight='bold')
+                        table = ax.table(cellText=shown.values,
+                                         colLabels=[c.replace('_',' ') for c in cols],
+                                         loc='upper left', cellLoc='left')
+                        table.auto_set_font_size(False)
+                        table.set_fontsize(8)
+                        table.scale(1, 1.2)
+                        if len(sub) > max_rows:
+                            ax.text(0.01, 0.02, f"… {len(sub)-max_rows} additional rows omitted", fontsize=9)
+                        pdf.savefig(fig, bbox_inches='tight')
+                        plt.close(fig)
+            except Exception as e:
+                print(f"   ⚠️ Could not add diagnostics summary page: {e}")
+            # Key figures
+            fig_list = [
                 'boundary_threshold_overview.png',
                 'boundary_timing_speed_thickness.png',
-                'mms3_shear_angles.png',
-            ]:
+                'mms3_shear_angles.png'
+            ]
+            if args.include_combined:
+                fig_list.append('mms_combined_publication_2019_01_27.png')
+            for f in fig_list:
                 if os.path.exists(f):
                     img = plt.imread(f)
                     fig = plt.figure(figsize=(11, 8.5))
@@ -680,18 +1049,32 @@ def main():
                     plt.axis('off')
                     pdf.savefig(fig, bbox_inches='tight')
                     plt.close(fig)
-            # Include any per-MMS spectrograms available (full and lowE)
-            for species in ['dis','des']:
-                for probe in ['1','2','3','4']:
-                    for variant in ['full','lowE']:
-                        f = f'fpi_{species}_spectrogram_{variant}_mms{probe}.png'
-                        if os.path.exists(f):
-                            img = plt.imread(f)
-                            fig = plt.figure(figsize=(11, 8.5))
-                            plt.imshow(img)
-                            plt.axis('off')
-                            pdf.savefig(fig, bbox_inches='tight')
-                            plt.close(fig)
+            # Per-MMS grids: Ion full/lowE and Electron full/lowE
+            if args.include_grids:
+                for species, label in [('dis','Ion'), ('des','Electron')]:
+                    for variant, vlabel in [('full','Full'), ('lowE','Low-E')]:
+                        # 2x2 grid for MMS1..4
+                        fig, axs = plt.subplots(2, 2, figsize=(11, 8.5))
+                        fig.suptitle(f'FPI {label} Spectrograms ({vlabel}) — MMS1–4', fontsize=14, fontweight='bold')
+                        idx = 0
+                        for r in range(2):
+                            for c in range(2):
+                                probe = str(idx+1)
+                                ax = axs[r, c]
+                                f = f'fpi_{species}_spectrogram_{variant}_mms{probe}.png'
+                                if os.path.exists(f):
+                                    img = plt.imread(f)
+                                    ax.imshow(img)
+                                    ax.axis('off')
+                                    ax.set_title(f'MMS{probe}', loc='left', fontsize=10)
+                                else:
+                                    ax.text(0.5, 0.5, f'MMS{probe}: not available', transform=ax.transAxes,
+                                            ha='center', va='center')
+                                    ax.axis('off')
+                                idx += 1
+                        plt.tight_layout()
+                        pdf.savefig(fig, bbox_inches='tight')
+                        plt.close(fig)
     except Exception as e:
         print(f"   ⚠️ PDF assembly warning: {e}")
 

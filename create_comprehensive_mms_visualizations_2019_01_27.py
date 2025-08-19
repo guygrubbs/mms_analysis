@@ -25,8 +25,11 @@ matplotlib.use('Agg')  # Use non-interactive backend
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 from mpl_toolkits.mplot3d import Axes3D
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import warnings
+
+# Force matplotlib to use UTC for all date formatting
+plt.rcParams['timezone'] = 'UTC'
 from typing import Dict, Tuple, Optional, List
 import os
 import glob

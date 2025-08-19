@@ -1,7 +1,7 @@
 # MMS Magnetopause Analysis Toolkit ( `mms_mp` )
 
 A **Python-only**, research-grade toolkit that reproduces—and extends—the IDL workflow used to study
-magnetopause reconnection events with **NASA’s Magnetospheric Multiscale (MMS)** mission data.  
+magnetopause reconnection events with **NASA’s Magnetospheric Multiscale (MMS)** mission data.
 It loads Level-2 CDFs directly from CDAWeb, detects boundary crossings with
 multi-parameter logic, reconstructs boundary motion, performs
 multi-spacecraft timing, and produces publication-quality figures.
@@ -180,6 +180,21 @@ python examples/2019_01_27_1200_visualization.py --overlay-json examples/overlay
 - `mms_ion_spectrograms_*.png` - Ion energy flux spectrograms
 - `mms_electron_spectrograms_2019_01_27.png` - Electron energy flux (all 4 spacecraft)
 - `mms_combined_spectrograms_2019_01_27.png` - Detailed ion/electron comparison
+
+
+---
+
+## 4a  Diagnostics quick guide
+
+- After running the 2019-01-27 analysis script, a diagnostics CSV is produced: `spectrogram_diagnostics.csv`
+- Columns: species, probe, candidate_or_dist_var, energy_var, energy_info, status, t_start_UT, t_end_UT, n_times, overlaps_window, match_confidence
+- To export a standalone diagnostics PDF:
+  - `python test_boundary_threshold_case.py --diagnostics-only-pdf`
+- To filter diagnostics and print a summary to the console:
+  - `python test_boundary_threshold_case.py --diag-filter-species des --diag-filter-status COVERAGE --diag-summarize`
+- To apply filters to the standalone diagnostics PDF detailed page:
+  - `python test_boundary_threshold_case.py --diagnostics-only-pdf --diag-filter-probe 2 --diag-filter-status OMNI_COVERAGE`
+
 
 ---
 

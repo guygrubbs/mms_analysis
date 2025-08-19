@@ -1,3 +1,9 @@
 pair,delay_s
 
 Vn (km/s),NaN
+MVA_normal_x,-0.5262
+MVA_normal_y,-0.8500
+MVA_normal_z,0.0228
+lambda2_over_lambda1,2.308
+lambda3_over_lambda2,6.773
+MVA_quality,good
