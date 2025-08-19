@@ -30,6 +30,8 @@ import matplotlib.colors as mcolors
 
 from pyspedas.projects import mms
 from pytplot import get_data, data_quants
+import os
+from matplotlib.backends.backend_pdf import PdfPages
 
 from publication_boundary_analysis import (
     load_mec_data_first,
@@ -210,9 +212,22 @@ def main():
     print("🧪 Boundary Threshold Test (≥0.4)")
     print("=" * 40)
 
-    # Analysis window wide enough to include all requested times
-    trange = ['2019-01-27/12:15:00', '2019-01-27/12:50:00']
+    # CLI/env overrides for energy caps and time range
+    import argparse, os
+    parser = argparse.ArgumentParser(description='MMS boundary and spectrogram analysis')
+    parser.add_argument('--start', default='2019-01-27/12:15:00')
+    parser.add_argument('--end', default='2019-01-27/12:50:00')
+    parser.add_argument('--ion-emax', type=float, default=float(os.getenv('ION_LOW_E_MAX', ION_LOW_E_MAX)))
+    parser.add_argument('--electron-emax', type=float, default=float(os.getenv('ELECTRON_LOW_E_MAX', ELECTRON_LOW_E_MAX)))
+    args = parser.parse_args()
+
+    # Analysis window
+    trange = [args.start, args.end]
     event_dt = datetime(2019, 1, 27, 12, 30, 50)
+
+    # Override module-level caps from CLI if provided
+    globals()['ION_LOW_E_MAX'] = args.ion_emax
+    globals()['ELECTRON_LOW_E_MAX'] = args.electron_emax
 
     # Load data
     positions, _ = load_mec_data_first(trange, ['1', '2', '3', '4'])
@@ -650,11 +665,43 @@ def main():
         w.writerow([])
         w.writerow(['Vn (km/s)', f'{vn:.3f}' if np.isfinite(vn) else 'NaN'])
 
+    # ---------- Assemble a single PDF with key figures ----------
+    try:
+        with PdfPages('mms_2019_01_27_publication_bundle.pdf') as pdf:
+            for f in [
+                'boundary_threshold_overview.png',
+                'boundary_timing_speed_thickness.png',
+                'mms3_shear_angles.png',
+            ]:
+                if os.path.exists(f):
+                    img = plt.imread(f)
+                    fig = plt.figure(figsize=(11, 8.5))
+                    plt.imshow(img)
+                    plt.axis('off')
+                    pdf.savefig(fig, bbox_inches='tight')
+                    plt.close(fig)
+            # Include any per-MMS spectrograms available (full and lowE)
+            for species in ['dis','des']:
+                for probe in ['1','2','3','4']:
+                    for variant in ['full','lowE']:
+                        f = f'fpi_{species}_spectrogram_{variant}_mms{probe}.png'
+                        if os.path.exists(f):
+                            img = plt.imread(f)
+                            fig = plt.figure(figsize=(11, 8.5))
+                            plt.imshow(img)
+                            plt.axis('off')
+                            pdf.savefig(fig, bbox_inches='tight')
+                            plt.close(fig)
+    except Exception as e:
+        print(f"   ⚠️ PDF assembly warning: {e}")
+
     print("\n✅ Test complete. Generated files:")
     print("  - boundary_threshold_overview.png")
     print("  - boundary_timing_speed_thickness.png")
     print("  - mms3_shear_angles.png")
-    print("  - boundary_summary.json, boundary_crossings.csv")
+    print("  - boundary_summary.json, boundary_crossings.csv, boundary_delays_vn.csv")
+    print("  - Spectrograms per MMS (full & lowE) when available")
+    print("  - mms_2019_01_27_publication_bundle.pdf")
 
 if __name__ == '__main__':
     main()
