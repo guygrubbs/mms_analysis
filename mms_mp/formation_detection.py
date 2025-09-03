@@ -20,6 +20,9 @@ from typing import Dict, Tuple, List, Optional
 from dataclasses import dataclass
 from enum import Enum
 
+SQRT2 = np.sqrt(2.0)
+REG_TETRA_V_OVER_A3 = 1.0 / (6.0 * SQRT2)  # V/a^3 for regular tetrahedron ≈ 0.11785
+
 
 class FormationType(Enum):
     """Enumeration of possible MMS formation types"""
@@ -29,6 +32,13 @@ class FormationType(Enum):
     LINEAR = "linear"
     IRREGULAR = "irregular"
     COLLAPSED = "collapsed"
+
+# Classification thresholds (module-level, tweakable)
+STRING_LINEARITY_THR = 0.85
+STRING_SPHERICITY_MAX = 0.10
+STRING_LINEARITY_FALLBACK = 0.75
+STRING_SPHERICITY_FALLBACK = 0.20
+STRING_AXIS_ANGLE_MAX_DEG = 12.0  # average angle to principal axis for strong string
 
 
 @dataclass
@@ -67,27 +77,27 @@ def detect_formation_type(positions: Dict[str, np.ndarray],
     FormationAnalysis
         Complete analysis of the detected formation
     """
-    
+
     # Convert to array for easier manipulation
     probes = ['1', '2', '3', '4']
     pos_array = np.array([positions[probe] for probe in probes])
-    
+
     # Calculate formation center and centered positions
     formation_center = np.mean(pos_array, axis=0)
     centered_positions = pos_array - formation_center
-    
+
     # Principal component analysis
     cov_matrix = np.cov(centered_positions.T)
     eigenvalues, eigenvectors = np.linalg.eig(cov_matrix)
-    
+
     # Sort by eigenvalue magnitude (largest first)
     sort_indices = np.argsort(eigenvalues)[::-1]
     eigenvalues = eigenvalues[sort_indices]
     eigenvectors = eigenvectors[:, sort_indices]
-    
+
     # Ensure eigenvalues are positive (numerical stability)
     eigenvalues = np.abs(eigenvalues)
-    
+
     # Calculate geometric metrics
     total_variance = np.sum(eigenvalues)
     if total_variance > 0:
@@ -96,7 +106,7 @@ def detect_formation_type(positions: Dict[str, np.ndarray],
         sphericity = eigenvalues[2] / total_variance if eigenvalues[0] > 0 else 0
     else:
         linearity = planarity = sphericity = 0
-    
+
     # Calculate formation volume
     if len(pos_array) >= 4:
         # Tetrahedron volume
@@ -108,10 +118,10 @@ def detect_formation_type(positions: Dict[str, np.ndarray],
         volume = abs(np.linalg.det(matrix)) / 6.0
     else:
         volume = 0
-    
+
     # Calculate characteristic scale
     characteristic_scale = np.sqrt(eigenvalues[0]) if eigenvalues[0] > 0 else 0
-    
+
     # Calculate inter-spacecraft separations
     separations = {}
     for i, probe1 in enumerate(probes):
@@ -119,20 +129,21 @@ def detect_formation_type(positions: Dict[str, np.ndarray],
             if i < j:
                 sep = np.linalg.norm(positions[probe1] - positions[probe2])
                 separations[f"{probe1}-{probe2}"] = sep
-    
+
     # Detect formation type based on geometric properties
     formation_type, confidence = _classify_formation(
-        linearity, planarity, sphericity, volume, separations, eigenvalues
+        linearity, planarity, sphericity, volume, separations, eigenvalues,
+        centered_positions=centered_positions, eigenvectors=eigenvectors
     )
-    
+
     # Calculate spacecraft orderings in different coordinate systems
     spacecraft_ordering = _calculate_orderings(positions, eigenvectors, velocities)
-    
+
     # Calculate quality metrics
     quality_metrics = _calculate_quality_metrics(
         positions, eigenvalues, separations, formation_type
     )
-    
+
     return FormationAnalysis(
         formation_type=formation_type,
         confidence=confidence,
@@ -150,38 +161,60 @@ def detect_formation_type(positions: Dict[str, np.ndarray],
     )
 
 
-def _classify_formation(linearity: float, planarity: float, sphericity: float, 
-                       volume: float, separations: Dict[str, float], 
-                       eigenvalues: np.ndarray) -> Tuple[FormationType, float]:
+def _classify_formation(linearity: float, planarity: float, sphericity: float,
+                       volume: float, separations: Dict[str, float],
+                       eigenvalues: np.ndarray,
+                       *,
+                       centered_positions: Optional[np.ndarray] = None,
+                       eigenvectors: Optional[np.ndarray] = None) -> Tuple[FormationType, float]:
     """
     Classify formation type based on geometric properties
-    
+
     Returns:
     --------
     Tuple[FormationType, float]
         Formation type and confidence (0-1)
     """
-    
+
     # Check for collapsed formation (all spacecraft very close)
     max_separation = max(separations.values()) if separations else 0
     if max_separation < 10:  # Less than 10 km
         return FormationType.COLLAPSED, 0.9
-    
-    # Check for string-of-pearls (high linearity, low sphericity)
-    if linearity > 0.85 and sphericity < 0.1:
+
+    # Check for string-of-pearls (high linearity, low sphericity) with axis-angle reinforcement
+    if linearity > STRING_LINEARITY_THR and sphericity < STRING_SPHERICITY_MAX:
+        axis_ok = True
+        axis_angle_mean = None
+        if centered_positions is not None and eigenvectors is not None:
+            # principal axis is eigenvectors[:,0]
+            axis = eigenvectors[:, 0]
+            axis = axis / (np.linalg.norm(axis) or 1.0)
+            angs = []
+            for v in centered_positions:
+                if np.linalg.norm(v) == 0:
+                    continue
+                u = v / np.linalg.norm(v)
+                c = np.clip(np.dot(u, axis), -1.0, 1.0)
+                angs.append(np.degrees(np.arccos(abs(c))))  # use absolute to ignore direction
+            if angs:
+                axis_angle_mean = float(np.mean(angs))
+                axis_ok = axis_angle_mean <= STRING_AXIS_ANGLE_MAX_DEG
         confidence = min(linearity, 1.0 - sphericity)
+        if axis_angle_mean is not None:
+            # incorporate alignment (smaller mean angle → higher confidence)
+            confidence = float(np.clip(confidence * max(0.5, (STRING_AXIS_ANGLE_MAX_DEG - axis_angle_mean) / STRING_AXIS_ANGLE_MAX_DEG + 0.5), 0.0, 1.0))
         return FormationType.STRING_OF_PEARLS, confidence
-    
-    # Check for linear formation (high linearity but not as extreme)
-    if linearity > 0.7 and sphericity < 0.2:
-        confidence = linearity * (1.0 - sphericity)
+
+    # Check for linear formation (next tier)
+    if linearity > STRING_LINEARITY_FALLBACK and sphericity < STRING_SPHERICITY_FALLBACK:
+        confidence = float(np.clip(linearity * (1.0 - sphericity), 0.0, 1.0))
         return FormationType.LINEAR, confidence
-    
+
     # Check for planar formation (high planarity, low sphericity)
     if planarity > 0.9 and sphericity < 0.15:
         confidence = planarity * (1.0 - sphericity)
         return FormationType.PLANAR, confidence
-    
+
     # Check for tetrahedral formation (balanced eigenvalues, significant volume)
     if sphericity > 0.15 and volume > 1000:  # Significant 3D structure
         # Good tetrahedron has relatively balanced eigenvalues
@@ -190,9 +223,9 @@ def _classify_formation(linearity: float, planarity: float, sphericity: float,
             if balance > 0.1:  # Not too elongated
                 confidence = sphericity * balance
                 return FormationType.TETRAHEDRAL, confidence
-    
+
     # Default to irregular if no clear pattern
-    confidence = 1.0 - max(linearity, planarity, sphericity)
+    confidence = float(np.clip(1.0 - max(linearity, planarity, sphericity), 0.0, 1.0))
     return FormationType.IRREGULAR, confidence
 
 
@@ -224,7 +257,7 @@ def _calculate_orderings(positions: Dict[str, np.ndarray],
     if velocities is not None:
         # Calculate mean velocity direction
         mean_velocity = np.mean([velocities[p] for p in probes], axis=0)
-        velocity_direction = mean_velocity / np.linalg.norm(mean_velocity)
+        velocity_direction = mean_velocity / (np.linalg.norm(mean_velocity) + 1e-12)
 
         # Order by projection along velocity direction (orbital ordering)
         velocity_projections = {p: np.dot(positions[p] - formation_center, velocity_direction)
@@ -251,25 +284,59 @@ def _calculate_orderings(positions: Dict[str, np.ndarray],
     return orderings
 
 
-def _calculate_quality_metrics(positions: Dict[str, np.ndarray], 
+def _calculate_quality_metrics(positions: Dict[str, np.ndarray],
                               eigenvalues: np.ndarray,
                               separations: Dict[str, float],
                               formation_type: FormationType) -> Dict[str, float]:
     """Calculate formation-specific quality metrics"""
-    
+
     metrics = {}
-    
+
     # Basic metrics
-    metrics['mean_separation'] = np.mean(list(separations.values()))
-    metrics['separation_std'] = np.std(list(separations.values()))
-    metrics['separation_uniformity'] = 1.0 - (metrics['separation_std'] / metrics['mean_separation'])
-    
+    metrics['mean_separation'] = float(np.mean(list(separations.values())))
+    metrics['separation_std'] = float(np.std(list(separations.values())))
+    metrics['separation_uniformity'] = float(1.0 - (metrics['separation_std'] / (metrics['mean_separation'] + 1e-12)))
+
     # Eigenvalue ratios
+    # Tetrahedron quality factor (Q) normalized to regular tetrahedron
+    # Following the idea: Q = 6*sqrt(2)*V / (sum of edge lengths)^3 scaled proxy
+    try:
+        # Build full set of six edges for 4 spacecraft
+        edges = []
+        probes = ['1','2','3','4']
+        for i, p1 in enumerate(probes):
+            for j, p2 in enumerate(probes):
+                if i < j:
+                    edges.append(np.linalg.norm(positions[p1] - positions[p2]))
+        edges = np.array(edges)
+        mean_edge = edges.mean() if len(edges) > 0 else 0.0
+        # Approximate regular tetrahedron edge length a by mean edge
+        # Regular tetrahedron volume V_reg = REG_TETRA_V_OVER_A3 * a^3
+        v_reg = REG_TETRA_V_OVER_A3 * (mean_edge ** 3)
+        q_tet = float(min(1.0, (1e-12 + v_reg) and (eigenvalues[0] >= 0) and (eigenvalues[1] >= 0) and (eigenvalues[2] >= 0)))
+        # Use ratio of actual volume to regular volume at mean edge as a proxy
+        # Clamp to [0,1]
+        q_tet = float(np.clip((1e-12 + metrics.get('tetrahedral_quality', 0)) * (volume / (v_reg + 1e-12)), 0.0, 1.0))
+        metrics['tetrahedron_quality_factor'] = q_tet
+        metrics['mean_edge_km'] = mean_edge
+    except Exception:
+        pass
+
+    # Separation matrix condition number (uniformity of edges)
+    try:
+        # Construct separation matrix (pairwise distances), compute std/mean
+        if len(edges) > 0:
+            sep_std = float(np.std(edges))
+            sep_mean = float(np.mean(edges))
+            metrics['separation_cv'] = sep_std / (sep_mean + 1e-12)
+    except Exception:
+        pass
+
     if eigenvalues[0] > 0:
         metrics['eigenvalue_ratio_21'] = eigenvalues[1] / eigenvalues[0]
         metrics['eigenvalue_ratio_31'] = eigenvalues[2] / eigenvalues[0]
         metrics['eigenvalue_ratio_32'] = eigenvalues[2] / eigenvalues[1] if eigenvalues[1] > 0 else 0
-    
+
     # Formation-specific quality
     if formation_type == FormationType.STRING_OF_PEARLS:
         # For string-of-pearls, good quality means high linearity and uniform spacing
@@ -280,7 +347,7 @@ def _calculate_quality_metrics(positions: Dict[str, np.ndarray],
     elif formation_type == FormationType.PLANAR:
         # For planar, good quality means small out-of-plane component
         metrics['planar_quality'] = 1.0 - metrics.get('eigenvalue_ratio_31', 1)
-    
+
     return metrics
 
 
@@ -317,6 +384,9 @@ def analyze_formation_from_event_data(event_data: Dict, target_time,
     as the authoritative source for spacecraft positions and velocities.
 
     Parameters:
+    ...
+    # After computing velocities and analysis below, record velocity direction if available
+
     -----------
     event_data : Dict
         Event data from mms_mp.data_loader.load_event()
@@ -359,41 +429,41 @@ def analyze_formation_from_event_data(event_data: Dict, target_time,
 
 def print_formation_analysis(analysis: FormationAnalysis, verbose: bool = True):
     """Print detailed formation analysis results"""
-    
+
     print(f"\n🔍 MMS Formation Analysis Results")
     print("=" * 50)
-    
+
     print(f"Formation Type: {analysis.formation_type.value.upper()}")
     print(f"Confidence: {analysis.confidence:.3f}")
     print(f"Formation Volume: {analysis.volume:.0f} km³")
     print(f"Characteristic Scale: {analysis.characteristic_scale:.1f} km")
-    
+
     print(f"\nGeometric Properties:")
     print(f"  Linearity: {analysis.linearity:.3f}")
     print(f"  Planarity: {analysis.planarity:.3f}")
     print(f"  Sphericity: {analysis.sphericity:.3f}")
-    
+
     print(f"\nPrincipal Components: [{analysis.principal_components[0]:.1f}, "
           f"{analysis.principal_components[1]:.1f}, {analysis.principal_components[2]:.1f}] km²")
-    
+
     if verbose:
         print(f"\nSpacecraft Orderings:")
         for coord_sys, ordering in analysis.spacecraft_ordering.items():
             order_str = ' → '.join([f'MMS{p}' for p in ordering])
             print(f"  {coord_sys:8s}: {order_str}")
-        
+
         print(f"\nInter-spacecraft Separations:")
         for pair, distance in analysis.separations.items():
             print(f"  MMS{pair}: {distance:.1f} km")
-        
+
         print(f"\nQuality Metrics:")
         for metric, value in analysis.quality_metrics.items():
             print(f"  {metric}: {value:.3f}")
-    
+
     # Recommendations
     recommended_method = get_formation_specific_analysis_method(analysis)
     print(f"\nRecommended Analysis Method: {recommended_method}")
-    
+
     if analysis.formation_type == FormationType.STRING_OF_PEARLS:
         print("📝 String-of-Pearls Formation Detected:")
         print("   • Use 1D timing analysis along principal axis")

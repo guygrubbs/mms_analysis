@@ -1,0 +1,23 @@
+[run]
+source_pkgs =
+  pyspedas
+# Store relative paths so reporting tools don’t see absolute site-packages paths.
+relative_files = True
+debug_file = coverage_debug
+omit =
+  */bin/*
+  */docs/*
+  */pytplot/tplot_math/tests/tests.py
+  */pyspedas/cdagui_tools/cdagui.py
+  */pyspedas/projects/maven/interp_utilities.py
+  */pyspedas/projects/maven/list_utilities.py
+  */pyspedas/projects/maven/read_iuvs_file_unused_modes.py
+  */pyspedas/projects/mms/tests/load_uri_tests.py
+  */pyspedas/projects/mms/deprecated/*
+  */pyspedas/projects/maven/tests/uri_tests.py
+
+[paths]
+pyspedas =
+  pyspedas
+  **/site-packages/pyspedas
+  **/dist-packages/pyspedas

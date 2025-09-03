@@ -206,6 +206,46 @@ def timing_normal(pos_gsm: Dict[str, np.ndarray],
 
     return n_hat, V, sigma_V
 
+# ------------------------------------------------------------
+# Formation-aware wrappers and geometry diagnostics
+# ------------------------------------------------------------
+
+def select_timing_method_from_formation(formation_analysis) -> str:
+    """Return recommended timing method string based on formation analysis."""
+    from .formation_detection import get_formation_specific_analysis_method
+    return get_formation_specific_analysis_method(formation_analysis)
+
+
+def normal_geometry_diagnostics(n_hat: np.ndarray,
+                                formation_analysis,  # FormationAnalysis
+                                positions: Dict[str, np.ndarray]) -> Dict[str, float]:
+    """
+    Compute angles between boundary normal and key formation geometry directions.
+
+    Returns dict with angles in degrees: angle_to_PC1, angle_to_PC2, angle_to_PC3,
+    angle_to_radial, and if velocities available: angle_to_along_track.
+    """
+    out: Dict[str, float] = {}
+    # Principal directions
+    pcs = formation_analysis.principal_directions  # (3,3), columns are PC1..PC3
+    for i, key in enumerate(['PC1', 'PC2', 'PC3']):
+        v = pcs[:, i]
+        c = float(np.clip(np.dot(n_hat, v) / (np.linalg.norm(n_hat) * np.linalg.norm(v) + 1e-12), -1.0, 1.0))
+        out[f'angle_to_{key}'] = float(np.degrees(np.arccos(c)))
+    # Radial from formation center
+    center = formation_analysis.formation_center
+    rhat = center / (np.linalg.norm(center) + 1e-12)
+    c = float(np.clip(np.dot(n_hat, rhat), -1.0, 1.0))
+    out['angle_to_radial'] = float(np.degrees(np.arccos(c)))
+    # Along-track (if velocities present)
+    mvd = formation_analysis.quality_metrics.get('mean_velocity_direction') if hasattr(formation_analysis, 'quality_metrics') else None
+    if mvd is not None:
+        vdir = np.array(mvd, dtype=float)
+        vdir = vdir / (np.linalg.norm(vdir) + 1e-12)
+        c = float(np.clip(np.dot(n_hat, vdir), -1.0, 1.0))
+        out['angle_to_along_track'] = float(np.degrees(np.arccos(c)))
+    return out
+
 # ----------------------------------------------------------------------
 # Additional convenience APIs expected by tests
 # ----------------------------------------------------------------------

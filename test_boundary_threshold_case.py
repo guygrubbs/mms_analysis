@@ -29,6 +29,8 @@ from datetime import datetime, timedelta, timezone
 import matplotlib.colors as mcolors
 
 from pyspedas.projects import mms
+from pyspedas.projects.mms.particles.mms_part_getspec import mms_part_getspec
+
 from pytplot import get_data, data_quants
 import os
 from matplotlib.backends.backend_pdf import PdfPages
@@ -237,10 +239,22 @@ def main():
     parser.add_argument('--diag-filter-probe', default='', help='Filter diagnostics by probe number (1..4)')
     parser.add_argument('--diag-filter-status', default='', help='Filter diagnostics by status (e.g., COVERAGE)')
     parser.add_argument('--diag-summarize', dest='diag_summarize', action='store_true', help='Print diagnostics summary to stdout after generation')
+    parser.add_argument('--debug', action='store_true', help='Verbose debug prints for availability and parameters')
     args = parser.parse_args()
+    if args.debug:
+        print(f"[debug] Using trange: {args.start} → {args.end}")
+        print("[debug] Probes: ['1','2','3','4'] (fixed)")
+
 
     # Analysis window
     trange = [args.start, args.end]
+    # Also compute tz-aware datetimes and a widened DES-only window (±15 min)
+    tr_start_dt = datetime.strptime(args.start.replace('/', ' '), '%Y-%m-%d %H:%M:%S').replace(tzinfo=timezone.utc)
+    tr_end_dt = datetime.strptime(args.end.replace('/', ' '), '%Y-%m-%d %H:%M:%S').replace(tzinfo=timezone.utc)
+    des_tr_start = (tr_start_dt - timedelta(minutes=15)).strftime('%Y-%m-%d/%H:%M:%S')
+    des_tr_end = (tr_end_dt + timedelta(minutes=15)).strftime('%Y-%m-%d/%H:%M:%S')
+    des_trange = [des_tr_start, des_tr_end]
+
     event_dt = datetime(2019, 1, 27, 12, 30, 50, tzinfo=timezone.utc)
 
     # Override module-level caps from CLI if provided
@@ -257,6 +271,34 @@ def main():
     # Transform to LMN for diagnostics (optional)
     if lmn_matrix is not None:
         data = transform_to_lmn(data, lmn_matrix)
+
+    # Formation-aware timing method selection and normal geometry diagnostics
+    try:
+        from mms_mp.formation_detection import detect_formation_type
+        from mms_mp.multispacecraft import select_timing_method_from_formation, normal_geometry_diagnostics
+        # Build a minimal positions dict for formation analysis (XY or full GSM as available)
+        pos_for_form = {p: np.array([positions[p][0], positions[p][1], positions[p][2]]) for p in positions}
+        formation = detect_formation_type(pos_for_form)
+        recommended = select_timing_method_from_formation(formation)
+        print(f"[formation] Recommended timing method: {recommended}")
+        # If we have an MVA normal, compute geometry angles
+        if mva_results is not None and 'normal' in mva_results:
+            n_hat = mva_results['normal']
+            geom = normal_geometry_diagnostics(n_hat, formation, pos_for_form)
+            print(f"[formation] Normal geometry diagnostics: {geom}")
+            # Stash for later diagnostics output (added to CSV below)
+            normal_geom_diag = {'recommended_method': recommended, **geom}
+        else:
+            normal_geom_diag = {'recommended_method': recommended}
+    except Exception as e:
+        print(f"[formation] Formation-aware diagnostics unavailable: {e}")
+        normal_geom_diag = {}
+
+    if args.debug:
+        print(f"[debug] MEC positions (km):")
+        for p in ['1','2','3','4']:
+            if p in positions:
+                print(f"   MMS{p}: {positions[p]}")
 
     # Build composite boundary scores for each probe
     scores = {}
@@ -285,6 +327,8 @@ def main():
         t_ref = btimes['1']
         s_ref = scores['1']
         for p in ['2', '3', '4']:
+            if args.debug:
+                print(f"[debug] Cross-correlation vs MMS1 for MMS{p}:")
             if p in scores:
                 delay = best_delay_by_xcorr(t_ref, s_ref, btimes[p], scores[p], max_lag_s=180)
                 delays[p] = delay
@@ -323,6 +367,45 @@ def main():
     axes[0].axhline(threshold, color='red', linestyle='--', linewidth=1.5, label='Threshold 0.4')
     for ax in axes:
         ax.grid(True, alpha=0.3)
+    # Formation geometry visual (XY-GSM) with MVA normal
+    try:
+        fig = plt.figure(figsize=(6.0, 5.6))
+        ax = fig.add_subplot(111)
+        ax.set_title('MMS Formation (XY-GSM) with MVA Normal', fontsize=12)
+        colors = {'1':'tab:blue','2':'tab:orange','3':'tab:green','4':'tab:red'}
+        for p in ['1','2','3','4']:
+            if p in positions:
+                r = positions[p]
+                ax.scatter(r[0], r[1], s=60, color=colors[p], edgecolors='k', zorder=3)
+                ax.text(r[0]+10, r[1]+10, f'MMS{p}', fontsize=9)
+        if mva_results is not None:
+            n = mva_results['normal']
+            center = np.mean(np.vstack([positions[k] for k in positions]), axis=0)
+            scale = 0.6 * max(1.0, np.max(np.linalg.norm(np.vstack(list(positions.values()))[:, :2], axis=1)))
+            ax.arrow(center[0], center[1], scale*n[0], scale*n[1], width=5.0, color='red', zorder=2)
+            # Angle annotations if available
+            if 'angle_to_PC1' in normal_geom_diag:
+                angle_text = '\n'.join([
+                    f"Recommended: {normal_geom_diag.get('recommended_method','')}",
+                    f"∠(PC1) = {normal_geom_diag.get('angle_to_PC1','')}",
+                    f"∠(PC2) = {normal_geom_diag.get('angle_to_PC2','')}",
+                    f"∠(PC3) = {normal_geom_diag.get('angle_to_PC3','')}",
+                    f"∠(Radial) = {normal_geom_diag.get('angle_to_radial','')}",
+                    f"∠(Along) = {normal_geom_diag.get('angle_to_along_track','')}"
+                ])
+                ax.text(0.02, 0.02, angle_text, transform=ax.transAxes, fontsize=9,
+                        va='bottom', ha='left', family='monospace',
+                        bbox=dict(boxstyle='round', fc='white', ec='gray', alpha=0.9))
+        ax.set_xlabel('X_GSM (km)')
+        ax.set_ylabel('Y_GSM (km)')
+        ax.set_aspect('equal', adjustable='box')
+        ax.grid(True, alpha=0.3)
+        plt.tight_layout()
+        plt.savefig('formation_geometry_xy_gsm.png', dpi=200, bbox_inches='tight')
+        plt.close(fig)
+    except Exception as e:
+        print(f"[formation] Could not create formation geometry figure: {e}")
+
     axes[0].set_ylabel('Boundary Score', fontweight='bold')
     axes[0].legend(ncol=5)
 
@@ -345,6 +428,9 @@ def main():
     plt.tight_layout()
     plt.savefig('boundary_threshold_overview.png', dpi=300, bbox_inches='tight', facecolor='white')
     plt.close()
+    if args.debug:
+        print(f"[debug] MVA normal (MMS1): {mva_results['normal'] if mva_results else None}")
+
 
     # ---------- Plot 2: Timing, Vn, and thickness ----------
     fig, ax = plt.subplots(1, 1, figsize=(10, 6))
@@ -393,7 +479,8 @@ def main():
         candidates = []
         prefix = f'mms{probe}_{species}_'
         for k in keys:
-            if not k.startswith(prefix):
+            # Accept both pyspedas-style and full FPI-style prefixes
+            if not (k.startswith(prefix) or k.startswith(f'mms{probe}_fpi_{species}_')):
                 continue
             ok = all(s in k for s in must_include)
             if ok and all(s in k for s in also_include):
@@ -401,7 +488,7 @@ def main():
         # fallback: relax also_include
         if not candidates and also_include:
             for k in keys:
-                if not k.startswith(prefix):
+                if not (k.startswith(prefix) or k.startswith(f'mms{probe}_fpi_{species}_')):
                     continue
                 if all(s in k for s in must_include):
                     candidates.append(k)
@@ -454,7 +541,7 @@ def main():
             keys = list(data_quants.keys())
             # energyspectr_omni can vary: 'energyspectr_omni_brst', 'energyspectr_brst_omni', etc.
             cand = find_var(keys, probe, species,
-                            must_include=['energyspectr'], also_include=['omni','brst'])
+                            must_include=['energyspectr'], also_include=['omni','brst','srvy','fast','avg','ql'])
             if cand is None:
                 cand = find_var(keys, probe, species, must_include=['energyspectr'])
             if cand is not None:
@@ -462,6 +549,7 @@ def main():
                 tried.append(cand)
                 record_var_coverage(name, species, probe, 'CANDIDATE_COVERAGE')
         if name not in data_quants:
+            # Do not synthesize from components; restrict to approved variables
             spectro_diag_rows.append([species, probe, ';'.join(tried), '', '', 'NOT_FOUND', '', '', ''])
             return None
         # Record coverage for chosen omni spectrogram
@@ -559,9 +647,11 @@ def main():
         dist_res = get_data(dist_var)
         if isinstance(dist_res, tuple):
             t_dist, dist = dist_res[0], dist_res[1]
+            dist_aux = dist_res[2] if len(dist_res) > 2 else None
         elif isinstance(dist_res, dict):
             t_dist = dist_res.get('x') or dist_res.get('times')
             dist = dist_res.get('y') if dist_res.get('y') is not None else dist_res.get('data')
+            dist_aux = dist_res.get('v') or dist_res.get('energy')
         else:
             return None
         if t_dist is None or dist is None:
@@ -569,17 +659,17 @@ def main():
         times = ensure_datetime_format(t_dist)
         dist = np.asarray(dist)
         # Get energy bins (may be (Nt, Ne) or (Ne,))
-        en_res = get_data(en_var)
+        energy = None
+        en = None
+        en_res = get_data(en_var) if en_var else None
         if isinstance(en_res, tuple):
             _, en = en_res[0], en_res[1]
         elif isinstance(en_res, dict):
             en = en_res.get('v') or en_res.get('y') or en_res.get('data')
-        else:
-            en = None
-        if en is None:
-            # Infer energy axis by dimension matching later or use metadata defaults
-            energy = None
-        else:
+        # If no separate energy table, try auxiliary from dist result
+        if en is None and dist_aux is not None:
+            en = dist_aux
+        if en is not None:
             en = np.asarray(en)
             if en.ndim == 2 and en.shape[0] == len(times):
                 energy = en[0]
@@ -593,23 +683,53 @@ def main():
                     energy = np.nanmedian(en, axis=0)
                 except Exception:
                     energy = None
-        # If still missing energy, construct a plausible energy vector
-        if energy is None:
-            # Construct a log-spaced vector representing typical FPI ranges
-            if species == 'dis':
-                energy = np.geomspace(10, 30000, 32)  # ions ~10 eV to 30 keV
-            else:
-                energy = np.geomspace(5, 30000, 32)   # electrons ~5 eV to 30 keV
-            spectro_diag_rows.append([species, probe, dist_var, en_var, f'imputed:{len(energy)}bins', 'IMPUTED_ENERGY_VECTOR'])
-        # Identify axes: assume time is axis 0 if matches
-        time_axis = 0 if dist.shape[0] == len(times) else None
-        if time_axis is None:
-            # Try last axis as time
-            if dist.shape[-1] == len(times):
-                time_axis = dist.ndim - 1
-                dist = np.moveaxis(dist, time_axis, 0)
+        # Strict: require a real energy vector
+        if energy is None or energy.ndim != 1:
+            spectro_diag_rows.append([species, probe, dist_var, en_var or '(dist_aux)', '', 'MISSING_DIST_OR_ENERGY'])
+            return None
+        # Identify time axis: prefer first axis, else move matching axis to front
+        if dist.shape[0] == len(times):
+            pass
+        else:
+            # find any axis matching Nt
+            axes_match = [ax for ax, sz in enumerate(dist.shape) if sz == len(times)]
+            if axes_match:
+                dist = np.moveaxis(dist, axes_match[0], 0)
             else:
                 return None
+        # Determine energy axis by matching energy length
+        ne = energy.size
+        cand_axes = [ax for ax, sz in enumerate(dist.shape[1:], start=1) if sz == ne]
+        if not cand_axes:
+            # Sometimes energy may be last; try transpose on trailing dims if 2D
+            return None
+        energy_axis = cand_axes[0]
+        # Average over all non-time, non-energy axes
+        axes_to_reduce = [ax for ax in range(dist.ndim) if ax not in (0, energy_axis)]
+        if axes_to_reduce:
+            data2d = np.nanmean(dist, axis=tuple(axes_to_reduce))
+        else:
+            data2d = dist
+        # Ensure shape (Nt, Ne) in correct order
+        if data2d.shape[0] != len(times) or data2d.shape[1] != ne:
+            # If flipped (Nt, Ne) != (Nt, ne), try swap
+            if data2d.T.shape == (len(times), ne):
+                data2d = data2d.T
+            else:
+                return None
+        # If energy descending, reverse axis 1
+        if energy[0] > energy[-1]:
+            energy = energy[::-1]
+            data2d = data2d[:, ::-1]
+        # Clip to analysis trange
+        try:
+            mask = [(t >= tr_start_dt) and (t <= tr_end_dt) for t in times]
+            if any(mask):
+                times = [t for t, m in zip(times, mask) if m]
+                data2d = data2d[mask, :]
+        except Exception:
+            pass
+        return times, energy, data2d
         # Now dist.shape[0] == Nt
         Nt = dist.shape[0]
         # Determine energy axis by matching energy length or choosing max varying axis
@@ -701,18 +821,176 @@ def main():
             lowE_focus = {'dis': 5000.0, 'des': 3000.0}[species]
             for probe in ['1', '2', '3', '4']:
                 try:
+                    # Load distributions (brst) for robust fallback from dist->spectrogram
                     mms.mms_load_fpi(trange=trange, probe=probe, data_rate='brst', level='l2',
                                      datatype=f'{species}-dist', time_clip=True)
                 except Exception as e:
                     print(f"   ⚠️ Could not load FPI {sp_name} distributions for MMS{probe}: {e}")
-                    continue
+                    # Continue anyway; we may still find energyspectr_omni via srvy
+                # Try to load energyspectr-omni explicitly (brst/fast/srvy)
+                loaded_omni = False
+                for rate in ['brst', 'fast', 'srvy']:
+                    try:
+                        # For DES, use widened window and no time_clip to ensure names register
+                        if species == 'des':
+                            mms.mms_load_fpi(trange=des_trange, probe=probe, data_rate=rate, level='l2',
+                                             datatype=f'{species}-energyspectr-omni', varformat='*energyspectr_omni*', time_clip=False)
+                        else:
+                            mms.mms_load_fpi(trange=trange, probe=probe, data_rate=rate, level='l2',
+                                             datatype=f'{species}-energyspectr-omni', varformat='*energyspectr_omni*', time_clip=True)
+                        if args.debug:
+                            print(f"[debug] Loaded {species}-energyspectr-omni ({rate}) for MMS{probe}")
+                        # Only consider it 'loaded' if keys actually appear
+                        pref = f"mms{probe}_{species}_"
+                        has_keys = any(k.startswith(pref) and 'energyspectr' in k for k in data_quants.keys())
+                        if has_keys:
+                            loaded_omni = True
+                            break
+                        else:
+                            if args.debug:
+                                print(f"[debug] No energyspectr keys found after {species}-energyspectr-omni ({rate}) load for MMS{probe}")
+                    except Exception as e:
+                        if args.debug:
+                            print(f"[debug] Could not load {species}-energyspectr-omni ({rate}) for MMS{probe}: {e}")
+                        continue
 
+                # If not yet found, try moms/qmoms and ql fallbacks like in legacy IDL usage
+                if not loaded_omni:
+                    # 1) moms at fast (l2)
+                    try:
+                        if species == 'des':
+                            mms.mms_load_fpi(trange=des_trange, probe=probe, data_rate='fast', level='l2',
+                                              datatype=f'{species}-moms', varformat='*energyspectr_omni*', time_clip=False)
+                        else:
+                            mms.mms_load_fpi(trange=trange, probe=probe, data_rate='fast', level='l2',
+                                              datatype=f'{species}-moms', varformat='*energyspectr_omni*', time_clip=True)
+                        if args.debug:
+                            print(f"[debug] Loaded {species}-moms (fast,l2) for MMS{probe} with varformat=*energyspectr_omni*")
+                    except Exception as e:
+                        if args.debug:
+                            print(f"[debug] Could not load {species}-moms (fast,l2) for MMS{probe}: {e}")
+                    # 2) qmoms at brst (l2)
+                    if not loaded_omni:
+                        try:
+                            if species == 'des':
+                                mms.mms_load_fpi(trange=des_trange, probe=probe, data_rate='brst', level='l2',
+                                                 datatype=f'{species}-qmoms', varformat='*energyspectr_omni*', time_clip=False)
+                            else:
+                                mms.mms_load_fpi(trange=trange, probe=probe, data_rate='brst', level='l2',
+                                                 datatype=f'{species}-qmoms', varformat='*energyspectr_omni*', time_clip=True)
+                            if args.debug:
+                                print(f"[debug] Loaded {species}-qmoms (brst,l2) for MMS{probe} with varformat=*energyspectr_omni*")
+                        except Exception as e:
+                            if args.debug:
+                                print(f"[debug] Could not load {species}-qmoms (brst,l2) for MMS{probe}: {e}")
+                    # 3) try to load energyspectr components (non-omni) explicitly
+                    if not loaded_omni:
+                        for rate in ['brst', 'fast', 'srvy']:
+                            try:
+                                if species == 'des':
+                                    mms.mms_load_fpi(trange=des_trange, probe=probe, data_rate=rate, level='l2',
+                                                     datatype=f'{species}-energyspectr', varformat='*energyspectr*', time_clip=False)
+                                else:
+                                    mms.mms_load_fpi(trange=trange, probe=probe, data_rate=rate, level='l2',
+                                                     datatype=f'{species}-energyspectr', time_clip=True)
+                                if args.debug:
+                                    print(f"[debug] Loaded {species}-energyspectr components ({rate}) for MMS{probe}")
+                            except Exception as e:
+                                if args.debug:
+                                    print(f"[debug] Could not load {species}-energyspectr ({rate}) for MMS{probe}: {e}")
+                                continue
+                    # 4) ql electrons at fast (fallback used historically for MMS4)
+                    if not loaded_omni and species == 'des':
+                        try:
+                            mms.mms_load_fpi(trange=des_trange, probe=probe, data_rate='fast', level='ql',
+                                             datatype='des', varformat='*energyspectr_omni*', time_clip=False)
+                            if args.debug:
+                                print(f"[debug] Loaded des (fast,ql) for MMS{probe} with varformat=*energyspectr_omni* (fallback)")
+                        except Exception as e:
+                            if args.debug:
+                                print(f"[debug] Could not load des (fast,ql) for MMS{probe}: {e}")
+
+                # Attempt to extract omni spectrogram if present (prefer brst,fast,srvy)
                 e_var = f'mms{probe}_{species}_energyspectr_omni_brst'
-                spec = extract_spectrogram(e_var)
+                if e_var not in data_quants:
+                    e_var = f'mms{probe}_{species}_energyspectr_omni_fast'
+                if e_var not in data_quants:
+                    e_var = f'mms{probe}_{species}_energyspectr_omni_srvy'
+                # Debug: list available DES keys (post-load visibility)
+                if args.debug:
+                    pref1 = f"mms{probe}_{species}_"
+                    pref2 = f"mms{probe}_fpi_{species}_"
+                    keys = [k for k in data_quants.keys() if (k.startswith(pref1) or k.startswith(pref2)) and 'des' in k if species=='des' or 'dis' in k]
+                    en_keys = [k for k in keys if 'energy' in k]
+                    e_spec = [k for k in keys if 'energyspectr' in k]
+                    if keys:
+                        print(f"[debug] Available {species.upper()} keys for MMS{probe}: {keys}")
+                        if e_spec:
+                            print(f"[debug] energyspectr keys: {e_spec}")
+                        if en_keys:
+                            print(f"[debug] energy table keys: {en_keys}")
+                    else:
+                        print(f"[debug] No {species.upper()} keys currently in pytplot for MMS{probe}")
+                spec = extract_spectrogram(e_var, probe=probe, species=species)
+                # If still none, try building energy spectrogram via pySPEDAS from dist (real data only)
                 if spec is None:
+                    try:
+                        # Build spectrograms strictly from real distributions via pySPEDAS; prefer FAST for speed
+                        sr = 'e' if species=='des' else 'i'
+                        out_vars = mms_part_getspec(
+                            instrument='fpi', probe=probe,
+                            species=sr, data_rate='fast',
+                            trange=trange, output=['energy'], units='eflux',
+                            center_measurement=False, spdf=False,
+                            correct_photoelectrons=False, disable_photoelectron_corrections=True,
+                            internal_photoelectron_corrections=False,
+                            regrid=[32,16], no_regrid=True, prefix='', suffix='')
+                        in_tname = f"mms{probe}_d{sr}s_dist_fast"
+                        energy_var = in_tname + "_energy"
+                        # If returned list provided, use it to find the energy var
+                        cand_var = None
+                        if isinstance(out_vars, list) and out_vars:
+                            # prefer exact match on in_tname+'_energy'
+                            for v in out_vars:
+                                if v == energy_var:
+                                    cand_var = v
+                                    break
+                            if cand_var is None:
+                                # fallback: any _energy var for this probe/species
+                                matches = [v for v in out_vars if v.endswith('_energy') and f"mms{probe}_d{sr}s_dist" in v]
+                                if matches:
+                                    cand_var = matches[0]
+                        if cand_var is None and energy_var in data_quants:
+                            cand_var = energy_var
+                        if cand_var:
+                            res = get_data(cand_var)
+                            if isinstance(res, dict):
+                                times = ensure_datetime_format(res.get('x'))
+                                energy = res.get('y')
+                                spec2d = res.get('z')
+                            else:
+                                times, energy, spec2d = res[0], res[1], res[2]
+                            # Clip to analysis window
+                            mask = [(t >= tr_start_dt) and (t <= tr_end_dt) for t in times]
+                            if any(mask):
+                                times = [t for t, m in zip(times, mask) if m]
+                                spec2d = spec2d[mask, :]
+                                spec = (times, energy, spec2d)
+                                # record that it was built via pySPEDAS
+                                spectro_diag_rows.append([species, probe, in_tname, cand_var, f"{len(energy)}bins", "BUILT_FROM_DIST", times[0].strftime('%Y-%m-%d %H:%M:%S'), times[-1].strftime('%Y-%m-%d %H:%M:%S'), len(times)])
+                        else:
+                            if args.debug:
+                                print(f"[debug] pySPEDAS build didn't produce {energy_var} for MMS{probe} {species}")
+                    except Exception as e:
+                        if args.debug:
+                            print(f"[debug] pySPEDAS build from dist failed for MMS{probe} {species}: {e}")
+
+                    spec = extract_spectrogram('', probe=probe, species=species)
+                if spec is None:
+                    # Fallback: build from distributions
                     spec = build_spectrogram_from_dist(species, probe=probe)
                 if spec is None:
-                    print(f"   ⚠️ No spectrogram available for MMS{probe} {sp_name}")
+                    print(f"   ⚠️ No spectrogram available for MMS{probe} {sp_name} (after brst/srvy omni + dist fallback)")
                     continue
                 times, energy, spec2d = spec
                 # Add UT coverage to diagnostics
@@ -779,12 +1057,11 @@ def main():
     # Spectrogram diagnostics CSV (what variables found/used; UT coverage)
     try:
         # extend rows with UT coverage; also include analysis window overlap
-        from datetime import datetime
         tr_start = datetime.strptime(args.start.replace('/', ' '), '%Y-%m-%d %H:%M:%S')
         tr_end = datetime.strptime(args.end.replace('/', ' '), '%Y-%m-%d %H:%M:%S')
         with open('spectrogram_diagnostics.csv', 'w', newline='') as df:
             dw = csv.writer(df)
-            dw.writerow(['species', 'probe', 'candidate_or_dist_var', 'energy_var', 'energy_info', 'status', 't_start_UT', 't_end_UT', 'n_times', 'overlaps_window', 'match_confidence'])
+            dw.writerow(['species', 'probe', 'candidate_or_dist_var', 'energy_var', 'energy_info', 'status', 't_start_UT', 't_end_UT', 'n_times', 'overlaps_window', 'match_confidence', 'recommended_method', 'angle_to_PC1', 'angle_to_PC2', 'angle_to_PC3', 'angle_to_radial', 'angle_to_along_track'])
             for row in spectro_diag_rows:
                 # pad with blanks for coverage fields
                 if len(row) < 9:
@@ -802,11 +1079,24 @@ def main():
                 # append overlap and confidence
                 cand = row[2] if len(row) > 2 else ''
                 conf = _match_confidence(cand, row[5] if len(row) > 5 else '')
-                row_out = row[:9] + [overlaps, conf]
+                # append formation-aware diag columns if computed
+                if 'recommended_method' in normal_geom_diag:
+                    rec = normal_geom_diag.get('recommended_method', '')
+                    a1 = normal_geom_diag.get('angle_to_PC1', '')
+                    a2 = normal_geom_diag.get('angle_to_PC2', '')
+                    a3 = normal_geom_diag.get('angle_to_PC3', '')
+                    ar = normal_geom_diag.get('angle_to_radial', '')
+                    aa = normal_geom_diag.get('angle_to_along_track', '')
+                else:
+                    rec = a1 = a2 = a3 = ar = aa = ''
+                row_out = row[:9] + [overlaps, conf, rec, a1, a2, a3, ar, aa]
                 dw.writerow(row_out)
-        print(f"   ⚠️ Could not write spectrogram_diagnostics.csv: {e}")
+    except Exception:
+        print("   ⚠️ Could not write spectrogram_diagnostics.csv (see logs above)")
+        pass
 
-    except Exception as e:
+
+
     # Optional: print filtered diagnostics summary and write filtered CSV
     if args.diag_summarize or args.diag_filter_species or args.diag_filter_probe or args.diag_filter_status:
         try:
@@ -839,8 +1129,6 @@ def main():
                 filt[out_cols].to_csv('spectrogram_diagnostics_filtered.csv', index=False)
         except Exception as e:
             print(f"   ⚠️ Could not produce filtered diagnostics: {e}")
-
-        print(f"   ⚠️ Could not write spectrogram_diagnostics.csv: {e}")
     # Build per-pair delays and Vn projections for CSV
     pairs = []
     for p in ['2', '3', '4']:
@@ -922,45 +1210,133 @@ def main():
             qual
         ])
 
+    def _add_diag_pages_to_pdf(pdf):
+        try:
+            import pandas as pd
+            if not os.path.exists('spectrogram_diagnostics.csv'):
+                return
+            diag = pd.read_csv('spectrogram_diagnostics.csv')
+            # Summary
+            fig, ax = plt.subplots(figsize=(11, 8.5))
+            ax.axis('off')
+            ax.set_title('Spectrogram Diagnostics (Summary)', fontsize=14, fontweight='bold')
+            summary = diag.groupby(['species','probe','status']).size().reset_index(name='count')
+            text = 'Status counts by species/probe:\n\n' + '\n'.join(
+                f"{r.species}/MMS{r.probe}: {r.status} = {r['count']}" for _, r in summary.iterrows()
+            )
+            if 'match_confidence' in diag.columns:
+                by_conf = diag.groupby('match_confidence').size().reset_index(name='count')
+                text += '\n\nConfidence tiers:\n' + '\n'.join(
+                    f"{r.match_confidence}: {r['count']}" for _, r in by_conf.iterrows()
+                )
+            ax.text(0.01, 0.98, text, va='top', ha='left', family='monospace')
+            pdf.savefig(fig, bbox_inches='tight')
+            plt.close(fig)
+            # Detailed
+            if len(diag) > 0:
+                cols = ['species','probe','candidate_or_dist_var','status','t_start_UT','t_end_UT','n_times',
+                        'overlaps_window','match_confidence','recommended_method','angle_to_PC1','angle_to_PC2',
+                        'angle_to_PC3','angle_to_radial','angle_to_along_track']
+                cols = [c for c in cols if c in diag.columns]
+                sub = diag[cols].copy()
+                sub['probe'] = sub['probe'].astype(str)
+                sort_cols = [c for c in ['species','probe','status','t_start_UT'] if c in sub.columns]
+                if sort_cols:
+                    sub = sub.sort_values(sort_cols)
+                shown = sub.head(30)
+                fig, ax = plt.subplots(figsize=(11, 8.5))
+                ax.axis('off')
+                ax.set_title('Spectrogram Diagnostics (Detailed)', fontsize=14, fontweight='bold')
+                table = ax.table(cellText=shown.values,
+                                 colLabels=[c.replace('_',' ') for c in cols],
+                                 loc='upper left', cellLoc='left')
+                table.auto_set_font_size(False)
+                table.set_fontsize(8)
+                table.scale(1, 1.2)
+                if len(sub) > 30:
+                    ax.text(0.01, 0.02, f"… {len(sub)-30} additional rows omitted", fontsize=9)
+                pdf.savefig(fig, bbox_inches='tight')
+                plt.close(fig)
+        except Exception as e:
+            print(f"   ⚠️ Could not add diagnostics summary pages: {e}")
+
     # ---------- Assemble a single PDF with key figures and per-MMS grids ----------
     try:
         with PdfPages('mms_2019_01_27_publication_bundle.pdf') as pdf:
             # Diagnostics page: quick summary
-            try:
-                import pandas as pd
-                if os.path.exists('spectrogram_diagnostics.csv'):
-                    diag = pd.read_csv('spectrogram_diagnostics.csv')
-                    # Summary counts page
-                    fig, ax = plt.subplots(figsize=(11, 8.5))
-                    ax.axis('off')
-                    ax.set_title('Spectrogram Diagnostics (Summary)', fontsize=14, fontweight='bold')
-                    summary = diag.groupby(['species','probe','status']).size().reset_index(name='count')
-                    text = 'Status counts by species/probe:\n\n' + '\n'.join(
-                        f"{r.species}/MMS{r.probe}: {r.status} = {r['count']}" for _, r in summary.iterrows()
-                    )
-                    # Confidence breakdown
-                    if 'match_confidence' in diag.columns:
-                        by_conf = diag.groupby('match_confidence').size().reset_index(name='count')
-                        text += '\n\nConfidence tiers:\n' + '\n'.join(
-                            f"{r.match_confidence}: {r['count']}" for _, r in by_conf.iterrows()
-                        )
-                    ax.text(0.01, 0.98, text, va='top', ha='left', family='monospace')
+            _add_diag_pages_to_pdf(pdf)
+            # Key figures
+            fig_list = [
+                'boundary_threshold_overview.png',
+                'boundary_timing_speed_thickness.png',
+                'mms3_shear_angles.png'
+            ]
+            if args.include_combined:
+                fig_list.append('mms_combined_publication_2019_01_27.png')
+            for f in fig_list:
+                if os.path.exists(f):
+                    img = plt.imread(f)
+                    fig = plt.figure(figsize=(11, 8.5))
+                    plt.imshow(img)
+                    plt.axis('off')
                     pdf.savefig(fig, bbox_inches='tight')
                     plt.close(fig)
-                    # Detailed table page only if we have rows
-                    if len(diag) > 0:
-                        cols = ['species','probe','candidate_or_dist_var','status','t_start_UT','t_end_UT','n_times','overlaps_window']
-                        # Gracefully limit columns if missing
-                        cols = [c for c in cols if c in diag.columns]
-                        sub = diag[cols].copy()
-                        sub['probe'] = sub['probe'].astype(str)
-                        # Sort rows for easy scanning
-                        sort_cols = [c for c in ['species','probe','status','t_start_UT'] if c in sub.columns]
-                        if sort_cols:
-                            sub = sub.sort_values(sort_cols)
-                        max_rows = 30
-                        shown = sub.head(max_rows)
-                        fig, ax = plt.subplots(figsize=(11, 8.5))
+            # Per-MMS grids: Ion full/lowE and Electron full/lowE
+            if args.include_grids:
+                for species, label in [('dis','Ion'), ('des','Electron')]:
+                    for variant, vlabel in [('full','Full'), ('lowE','Low-E')]:
+                        fig, axs = plt.subplots(2, 2, figsize=(11, 8.5))
+                        fig.suptitle(f'FPI {label} Spectrograms ({vlabel}) — MMS1–4', fontsize=14, fontweight='bold')
+                        idx = 0
+                        for r in range(2):
+                            for c in range(2):
+                                probe = str(idx+1)
+                                ax = axs[r, c]
+                                pf = f'fpi_{species}_spectrogram_{variant}_mms{probe}.png'
+                                if os.path.exists(pf):
+                                    img = plt.imread(pf)
+                                    ax.imshow(img)
+                                    ax.axis('off')
+                                    ax.set_title(f'MMS{probe}', loc='left', fontsize=10)
+                                else:
+                                    ax.text(0.5, 0.5, f'MMS{probe}: not available', transform=ax.transAxes,
+                                            ha='center', va='center')
+                                    ax.axis('off')
+                                idx += 1
+                        plt.tight_layout()
+                        pdf.savefig(fig, bbox_inches='tight')
+                        plt.close(fig)
+            # Formation summary page
+            try:
+                import pandas as pd
+                fig, ax = plt.subplots(figsize=(11, 8.5))
+                ax.axis('off')
+                ax.set_title('Formation Summary', fontsize=14, fontweight='bold')
+                lines = []
+                lines.append('Event: 2019-01-27 around 12:30 UT (magnetopause)')
+                if os.path.exists('spectrogram_diagnostics.csv'):
+                    diag = pd.read_csv('spectrogram_diagnostics.csv')
+                    if 'recommended_method' in diag.columns:
+                        recs = diag['recommended_method'].dropna().unique()
+                        if len(recs):
+                            lines.append(f"Recommended method(s) seen: {', '.join([str(r) for r in recs])}")
+                    for key in ['angle_to_PC1','angle_to_PC2','angle_to_PC3','angle_to_radial','angle_to_along_track']:
+                        if key in diag.columns:
+                            vals = pd.to_numeric(diag[key], errors='coerce').dropna()
+                            if len(vals):
+                                lines.append(f"{key}: mean={vals.mean():.1f}°, median={vals.median():.1f}°")
+                text = '\n'.join(lines)
+                ax.text(0.02, 0.98, text, va='top', ha='left', family='monospace')
+                pdf.savefig(fig, bbox_inches='tight')
+                plt.close(fig)
+            except Exception as e:
+                print(f"[formation] Could not build formation summary page: {e}")
+
+                # ... rest of publication bundle assembly (figures, grids, formation summary) ...
+    except Exception as e:
+        print(f"   ⚠️ PDF assembly warning: {e}")
+
+
     # ---------- Optionally assemble a standalone diagnostics PDF ----------
     if args.diagnostics_only_pdf:
         try:
@@ -1019,64 +1395,6 @@ def main():
         except Exception as e:
             print(f"   ⚠️ Could not build diagnostics-only PDF: {e}")
 
-                        ax.axis('off')
-                        ax.set_title('Spectrogram Diagnostics (Detailed)', fontsize=14, fontweight='bold')
-                        table = ax.table(cellText=shown.values,
-                                         colLabels=[c.replace('_',' ') for c in cols],
-                                         loc='upper left', cellLoc='left')
-                        table.auto_set_font_size(False)
-                        table.set_fontsize(8)
-                        table.scale(1, 1.2)
-                        if len(sub) > max_rows:
-                            ax.text(0.01, 0.02, f"… {len(sub)-max_rows} additional rows omitted", fontsize=9)
-                        pdf.savefig(fig, bbox_inches='tight')
-                        plt.close(fig)
-            except Exception as e:
-                print(f"   ⚠️ Could not add diagnostics summary page: {e}")
-            # Key figures
-            fig_list = [
-                'boundary_threshold_overview.png',
-                'boundary_timing_speed_thickness.png',
-                'mms3_shear_angles.png'
-            ]
-            if args.include_combined:
-                fig_list.append('mms_combined_publication_2019_01_27.png')
-            for f in fig_list:
-                if os.path.exists(f):
-                    img = plt.imread(f)
-                    fig = plt.figure(figsize=(11, 8.5))
-                    plt.imshow(img)
-                    plt.axis('off')
-                    pdf.savefig(fig, bbox_inches='tight')
-                    plt.close(fig)
-            # Per-MMS grids: Ion full/lowE and Electron full/lowE
-            if args.include_grids:
-                for species, label in [('dis','Ion'), ('des','Electron')]:
-                    for variant, vlabel in [('full','Full'), ('lowE','Low-E')]:
-                        # 2x2 grid for MMS1..4
-                        fig, axs = plt.subplots(2, 2, figsize=(11, 8.5))
-                        fig.suptitle(f'FPI {label} Spectrograms ({vlabel}) — MMS1–4', fontsize=14, fontweight='bold')
-                        idx = 0
-                        for r in range(2):
-                            for c in range(2):
-                                probe = str(idx+1)
-                                ax = axs[r, c]
-                                f = f'fpi_{species}_spectrogram_{variant}_mms{probe}.png'
-                                if os.path.exists(f):
-                                    img = plt.imread(f)
-                                    ax.imshow(img)
-                                    ax.axis('off')
-                                    ax.set_title(f'MMS{probe}', loc='left', fontsize=10)
-                                else:
-                                    ax.text(0.5, 0.5, f'MMS{probe}: not available', transform=ax.transAxes,
-                                            ha='center', va='center')
-                                    ax.axis('off')
-                                idx += 1
-                        plt.tight_layout()
-                        pdf.savefig(fig, bbox_inches='tight')
-                        plt.close(fig)
-    except Exception as e:
-        print(f"   ⚠️ PDF assembly warning: {e}")
 
     print("\n✅ Test complete. Generated files:")
     print("  - boundary_threshold_overview.png")
