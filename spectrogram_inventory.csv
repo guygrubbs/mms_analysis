@@ -1,0 +1,6 @@
+probe,species,source,candidate_var,energy_var,bins,t_start_UT,t_end_UT,n_times
+1,dis,NOT_FOUND,mms1_dis_energyspectr_omni_srvy,,,,,
+1,dis,NOT_FOUND,,,,,,
+1,dis,DIST_COVERAGE,mms1_dis_dist_brst,,,2019-01-27 12:15:00,2019-01-27 12:45:22,6083
+1,dis,ENERGY_COVERAGE,mms1_dis_energy_brst,,,2019-01-27 12:15:00,2019-01-27 12:45:22,6083
+1,dis,COVERAGE,mms1_dis_energyspectr_omni_srvy,,32bins,2019-01-27 12:15:00,2019-01-27 12:45:22,6083

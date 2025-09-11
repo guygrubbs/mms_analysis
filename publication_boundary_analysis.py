@@ -25,6 +25,8 @@ import matplotlib.dates as mdates
 from datetime import datetime, timedelta, timezone
 import pandas as pd
 import warnings
+import os
+import matplotlib.colors as mcolors
 
 # Force matplotlib to use UTC for all date formatting
 plt.rcParams['timezone'] = 'UTC'
@@ -138,12 +140,12 @@ def ensure_datetime_format(times):
 
 def load_mec_data_first(trange, probes):
     """Load MEC data FIRST and capture immediately before any other loading"""
-    
+
     print("🛰️ Loading MEC ephemeris data...")
-    
+
     all_positions = {}
     all_velocities = {}
-    
+
     for probe in probes:
         try:
             result = mms.mms_load_mec(
@@ -152,16 +154,17 @@ def load_mec_data_first(trange, probes):
                 data_rate='srvy',
                 level='l2',
                 datatype='epht89q',
-                time_clip=True
+                time_clip=True,
+                no_update=True
             )
-            
+
             pos_var = f'mms{probe}_mec_r_gsm'
             vel_var = f'mms{probe}_mec_v_gsm'
-            
+
             if pos_var in data_quants and vel_var in data_quants:
                 times_pos, pos_data = get_data(pos_var)
                 times_vel, vel_data = get_data(vel_var)
-                
+
                 all_positions[probe] = {
                     'times': times_pos,
                     'data': pos_data
@@ -170,52 +173,57 @@ def load_mec_data_first(trange, probes):
                     'times': times_vel,
                     'data': vel_data
                 }
-                
+
                 print(f"   ✅ MMS{probe}: {len(times_pos)} ephemeris points")
-                
+
             else:
                 print(f"   ❌ MMS{probe}: MEC variables not accessible")
-                
+
         except Exception as e:
             print(f"   ❌ MMS{probe}: Error loading MEC data: {e}")
-    
+
     return all_positions, all_velocities
 
 def load_comprehensive_science_data(trange, probes):
     """Load comprehensive science data for boundary analysis"""
-    
+
     print("\n📡 Loading comprehensive science data...")
-    
+
     data = {}
-    
+
     for probe in probes:
         print(f"   Loading MMS{probe}...")
         data[probe] = {}
-        
+
         try:
-            # Load high-resolution FGM data
-            fgm_result = mms.mms_load_fgm(
-                trange=trange,
-                probe=probe,
-                data_rate='brst',
-                level='l2',
-                time_clip=True
-            )
-            
-            # Get magnetic field in multiple coordinate systems
-            b_gsm_var = f'mms{probe}_fgm_b_gsm_brst_l2'
-            b_gse_var = f'mms{probe}_fgm_b_gse_brst_l2'
-            
-            if b_gsm_var in data_quants:
-                times, b_gsm = get_data(b_gsm_var)
-                data[probe]['B_gsm'] = (times, b_gsm)
-                print(f"      ✅ FGM GSM: {len(times)} points")
-            
-            if b_gse_var in data_quants:
-                times, b_gse = get_data(b_gse_var)
-                data[probe]['B_gse'] = (times, b_gse)
-                print(f"      ✅ FGM GSE: {len(times)} points")
-            
+            # Load FGM data, prefer BRST but fallback to FAST then SRVY
+            b_loaded = False
+            for dr in ['brst', 'fast', 'srvy']:
+                try:
+                    mms.mms_load_fgm(
+                        trange=trange,
+                        probe=probe,
+                        data_rate=dr,
+                        level='l2',
+                        time_clip=True
+                    )
+                    b_gsm_var = f'mms{probe}_fgm_b_gsm_{dr}_l2'
+                    b_gse_var = f'mms{probe}_fgm_b_gse_{dr}_l2'
+                    if b_gsm_var in data_quants:
+                        times, b_gsm = get_data(b_gsm_var)
+                        data[probe]['B_gsm'] = (times, b_gsm)
+                        print(f"      ✅ FGM GSM ({dr}): {len(times)} points")
+                        b_loaded = True
+                    if b_gse_var in data_quants:
+                        times, b_gse = get_data(b_gse_var)
+                        data[probe]['B_gse'] = (times, b_gse)
+                        print(f"      ✅ FGM GSE ({dr}): {len(times)} points")
+                        b_loaded = True or b_loaded
+                    if b_loaded:
+                        break
+                except Exception as e:
+                    print(f"      ⚠️ FGM load failed for {dr}: {e}")
+
             # Load FPI ion data
             fpi_result = mms.mms_load_fpi(
                 trange=trange,
@@ -223,30 +231,31 @@ def load_comprehensive_science_data(trange, probes):
                 data_rate='brst',
                 level='l2',
                 datatype='dis-moms',
-                time_clip=True
+                time_clip=True,
+                no_update=True
             )
-            
+
             # Get plasma parameters
             n_var = f'mms{probe}_dis_numberdensity_brst'
             v_var = f'mms{probe}_dis_bulkv_gse_brst'
             t_var = f'mms{probe}_dis_temppara_brst'
             p_var = f'mms{probe}_dis_prestensor_gse_brst'
-            
+
             if n_var in data_quants:
                 times, n_data = get_data(n_var)
                 data[probe]['N_i'] = (times, n_data)
                 print(f"      ✅ Ion density: {len(times)} points")
-            
+
             if v_var in data_quants:
                 times, v_data = get_data(v_var)
                 data[probe]['V_i'] = (times, v_data)
                 print(f"      ✅ Ion velocity: {len(times)} points")
-            
+
             if t_var in data_quants:
                 times, t_data = get_data(t_var)
                 data[probe]['T_i'] = (times, t_data)
                 print(f"      ✅ Ion temperature: {len(times)} points")
-            
+
             if p_var in data_quants:
                 times, p_data = get_data(p_var)
                 # Calculate pressure trace (handle different tensor formats)
@@ -262,10 +271,10 @@ def load_comprehensive_science_data(trange, probes):
                 except Exception as e:
                     print(f"      ⚠️ Ion pressure format issue: {e}")
                     # Skip pressure data if format is problematic
-                
+
         except Exception as e:
             print(f"      ❌ Error loading science data: {e}")
-    
+
     return data
 
 def calculate_boundary_normal(data, event_dt, window_minutes=10):
@@ -319,16 +328,16 @@ def calculate_boundary_normal(data, event_dt, window_minutes=10):
     if b_window.shape[1] > 3:
         print(f"   🔧 Using first 3 components of {b_window.shape[1]}-component B-field")
         b_window = b_window[:, :3]
-    
+
     print(f"   📊 MVA analysis window: {len(b_window)} points over {window_minutes} minutes")
-    
+
     # Minimum Variance Analysis
     # Calculate covariance matrix
     b_mean = np.mean(b_window, axis=0)
     b_centered = b_window - b_mean
-    
+
     cov_matrix = np.cov(b_centered.T)
-    
+
     # Find eigenvalues and eigenvectors
     eigenvals, eigenvecs = np.linalg.eigh(cov_matrix)
 
@@ -364,21 +373,21 @@ def calculate_boundary_normal(data, event_dt, window_minutes=10):
     # Ensure right-handed coordinate system
     if np.dot(m_direction, np.cross(l_direction, n_boundary)) < 0:
         m_direction = -m_direction
-    
+
     # Calculate variance ratios for quality assessment
     lambda_ratio_intermediate = eigenvals[1] / eigenvals[0]
     lambda_ratio_maximum = eigenvals[2] / eigenvals[1]
-    
+
     print(f"   📈 Eigenvalue ratios: λ₂/λ₁ = {lambda_ratio_intermediate:.2f}, λ₃/λ₂ = {lambda_ratio_maximum:.2f}")
-    
+
     if lambda_ratio_intermediate < 2.0:
         print(f"   ⚠️ Low intermediate/minimum variance ratio - boundary normal may be unreliable")
-    
+
     # Create LMN transformation matrix
     lmn_matrix = np.column_stack([l_direction, m_direction, n_boundary])
-    
+
     print(f"   ✅ Boundary normal: [{n_boundary[0]:.3f}, {n_boundary[1]:.3f}, {n_boundary[2]:.3f}]")
-    
+
     return lmn_matrix, {
         'normal': n_boundary,
         'l_direction': l_direction,
@@ -390,12 +399,223 @@ def calculate_boundary_normal(data, event_dt, window_minutes=10):
 
 def transform_to_lmn(data, lmn_matrix):
     """Transform magnetic field data to LMN coordinates"""
-    
+
     if lmn_matrix is None:
         return data
-    
+
+    print("\n🔄 Transforming magnetic field data to LMN coordinates...")
+
+    # Transform B-field data for each probe
+    for probe in ['1', '2', '3', '4']:
+        if probe in data and 'B_gsm' in data[probe]:
+            times, b_gsm = data[probe]['B_gsm']
+            try:
+                if b_gsm.shape[1] > 3:
+                    b_gsm = b_gsm[:, :3]
+            except Exception:
+                pass
+            b_lmn = b_gsm @ lmn_matrix  # Matrix multiplication
+            data[probe]['B_lmn'] = (times, b_lmn)
+            print(f"   ✅ Transformed B-field for MMS{probe}")
+
+    return data
+
+
+# ----------------------------
+# FPI Spectrogram utilities
+# ----------------------------
+try:
+    from pyspedas.projects.mms.particles.mms_part_getspec import mms_part_getspec
+except Exception:
+    mms_part_getspec = None
+try:
+    from pyspedas.tplot_tools.MPLPlotter.specplot import specplot_make_1d_ybins  # type: ignore
+except Exception:
+    specplot_make_1d_ybins = None
+
+
+def _get_tplot_data(varname):
+    from pytplot import get_data
+    res = get_data(varname)
+    if isinstance(res, dict):
+        times = res.get('x')
+        z = res.get('y')  # pySPEDAS stores spectrogram Z in 'y'
+        v = res.get('v')  # energy vector(s) in 'v'
+        return times, v, z
+    else:
+        # fallback tuple order (x, y, z) or sometimes (x, z, v)
+        if len(res) >= 3 and res[2] is not None:
+            # assume (x, z, v)
+            return res[0], res[2], res[1]
+        return res[0], None, res[1]
+
+
+def _energy_edges(energy, z):
+    # Prefer pySPEDAS helper if available; else fallback to geometric/midpoints
+    if specplot_make_1d_ybins is not None:
+        try:
+            ybins, _ = specplot_make_1d_ybins(z, energy, ylog=True, no_regrid=True)
+            if ybins is not None and len(ybins) >= 2:
+                return ybins
+        except Exception:
+            pass
+    En = np.asarray(energy)
+    Ee = np.empty(En.size + 1)
+    if En.size > 1 and np.all(En > 0) and (np.max(En)/max(np.min(En),1e-9) > 50):
+        Ee[1:-1] = np.sqrt(En[:-1] * En[1:])
+        Ee[0] = En[0]**2 / Ee[1]
+        Ee[-1] = En[-1]**2 / Ee[-2]
+    else:
+        Ee[1:-1] = 0.5 * (En[:-1] + En[1:]) if En.size > 1 else En[0]
+        Ee[0] = En[0] - (En[1] - En[0]) / 2.0 if En.size > 1 else En[0] - 1.0
+        Ee[-1] = En[-1] + (En[-1] - En[-2]) / 2.0 if En.size > 1 else En[-1] + 1.0
+    return Ee
+
+
+def build_and_save_fpi_spectrograms(trange, probes, outdir='.', lowE_focus=1000.0):
+    """Build and save FPI electron and ion spectrograms for all probes with fallbacks.
+
+    Saves PNGs to outdir and returns an inventory list with paths.
+    """
+    from pytplot import data_quants
+
+    os.makedirs(outdir, exist_ok=True)
+    inventory = []  # dicts of {probe, species, rate, path_full, path_lowE}
+
+    for probe in probes:
+        for species in ['des', 'dis']:
+            sp_name = 'Electrons' if species == 'des' else 'Ions'
+            sr = 'e' if species == 'des' else 'i'
+
+            # Try to find an existing energy spectrogram variable
+            in_prefixes = [f'mms{probe}_d{sr}s_dist_brst', f'mms{probe}_d{sr}s_dist_fast', f'mms{probe}_d{sr}s_dist_srvy']
+            energy_var = None
+            used_rate = None
+            for pre in in_prefixes:
+                cand = pre + '_energy'
+                if cand in data_quants:
+                    energy_var = cand
+                    if 'brst' in pre: used_rate = 'brst'
+                    elif 'fast' in pre: used_rate = 'fast'
+                    else: used_rate = 'srvy'
+                    break
+
+            # If not available, build via pySPEDAS, preferring brst->fast->srvy
+            if energy_var is None and mms_part_getspec is not None:
+                for rate in ['brst', 'fast', 'srvy']:
+                    try:
+                        out_vars = mms_part_getspec(
+                            instrument='fpi', probe=probe, species=sr, data_rate=rate,
+                            trange=trange, output=['energy','pa'], units='eflux',
+                            center_measurement=False, spdf=False,
+                            correct_photoelectrons=False, disable_photoelectron_corrections=True,
+                            internal_photoelectron_corrections=False,
+                            no_regrid=False, prefix='', suffix='')
+                        # Identify created energy var
+                        in_tname = f'mms{probe}_d{sr}s_dist_{rate}'
+                        cand = in_tname + '_energy'
+                        if isinstance(out_vars, list) and cand not in out_vars:
+                            # try to find any matching '_energy' for this probe/species
+                            matches = [v for v in out_vars if v.endswith('_energy') and f"mms{probe}_d{sr}s_dist" in v]
+                            if matches:
+                                cand = matches[0]
+                        if cand in data_quants:
+                            energy_var = cand
+                            used_rate = rate
+                            break
+                    except Exception as e:
+                        print(f"   ⚠️ mms_part_getspec failed ({species}, MMS{probe}, {rate}): {e}")
+
+            if energy_var is None:
+                print(f"   ❌ Could not build/find FPI {sp_name} spectrogram for MMS{probe}")
+                continue
+
+            # Fetch spectrogram arrays from tplot
+            times, energy, z = _get_tplot_data(energy_var)
+            if times is None or energy is None or z is None:
+                print(f"   ❌ Missing arrays for {energy_var}")
+                continue
+
+            # Build time edges
+            Xc = mdates.date2num(ensure_datetime_format(times))
+            Xe = np.empty(len(Xc) + 1)
+            if len(Xc) > 1:
+                Xe[1:-1] = 0.5 * (Xc[:-1] + Xc[1:])
+                Xe[0] = Xc[0] - (Xc[1] - Xc[0]) / 2.0
+                Xe[-1] = Xc[-1] + (Xc[-1] - Xc[-2]) / 2.0
+            else:
+                Xe[:] = [Xc[0] - 1.0/1440, Xc[0] + 1.0/1440]
+
+            # Build energy edges
+            ybins = _energy_edges(np.asarray(energy), np.asarray(z))
+
+            # Plot and save
+            for label, emax in [('full', None), ('lowE', lowE_focus)]:
+                fig, ax = plt.subplots(1, 1, figsize=(14, 4))
+                title = f'FPI {sp_name} Spectrogram ({label.upper()}) — MMS{probe} [{used_rate}]'
+                fig.suptitle(title, fontsize=14, fontweight='bold')
+
+                spec_plot = np.where(z <= 0, np.nan, z)
+                yy = ybins
+                if emax is not None:
+                    mask = (yy[:-1] <= emax)
+                    if np.any(mask):
+                        yy = yy[:np.where(mask)[0][-1] + 2]
+                        spec_plot = spec_plot[:, :len(yy)-1]
+
+                vmin = np.nanpercentile(spec_plot, 5)
+                vmax = np.nanpercentile(spec_plot, 99)
+                pcm = ax.pcolormesh(Xe, yy, spec_plot.T, shading='auto', cmap='viridis',
+                                    norm=mcolors.LogNorm(vmin=max(vmin, 1e-2), vmax=max(vmax, 1.0)))
+                cbar = fig.colorbar(pcm, ax=ax, pad=0.01)
+                cbar.set_label('Energy Flux')
+                ax.set_ylabel('Energy (eV)')
+                ax.set_yscale('log')
+                safe_format_time_axis(ax, interval_minutes=2)
+                ax.set_xlabel('Time (UT)')
+                plt.tight_layout()
+
+                fname = os.path.join(outdir, f'fpi_{species}_spectrogram_{label}_mms{probe}_{used_rate}.png')
+                plt.savefig(fname, dpi=300, bbox_inches='tight', facecolor='white')
+                plt.close()
+
+            inventory.append({
+                'probe': probe,
+                'species': species,
+                'rate': used_rate,
+                'energy_var': energy_var,
+                'paths': {
+                    'full': os.path.join(outdir, f'fpi_{species}_spectrogram_full_mms{probe}_{used_rate}.png'),
+                    'lowE': os.path.join(outdir, f'fpi_{species}_spectrogram_lowE_mms{probe}_{used_rate}.png'),
+                }
+            })
+    # Also build in main flow for clarity and reuse
+
+
+    # Save inventory CSV
+    inv_csv = os.path.join(outdir, 'fpi_spectrogram_inventory.csv')
+    rows = []
+    for item in inventory:
+        rows.append({
+            'probe': item['probe'],
+            'species': item['species'],
+            'rate': item['rate'],
+            'energy_var': item['energy_var'],
+            'full_path': item['paths']['full'],
+            'lowE_path': item['paths']['lowE'],
+        })
+    pd.DataFrame(rows).to_csv(inv_csv, index=False)
+    print(f"   ✅ Saved inventory: {inv_csv}")
+
+    return inventory
+
+    """Transform magnetic field data to LMN coordinates"""
+
+    if lmn_matrix is None:
+        return data
+
     print(f"\n🔄 Transforming data to LMN coordinates...")
-    
+
     for probe in data.keys():
         if 'B_gsm' in data[probe]:
             times, b_gsm = data[probe]['B_gsm']
@@ -411,41 +631,41 @@ def transform_to_lmn(data, lmn_matrix):
             data[probe]['B_lmn'] = (times, b_lmn)
 
             print(f"   ✅ MMS{probe}: Transformed {len(times)} B-field points to LMN")
-    
+
     return data
 
 def detect_boundary_crossings(data, event_dt, probe='1'):
     """Detect boundary crossings using multiple criteria"""
-    
+
     print(f"\n🎯 Detecting boundary crossings...")
-    
+
     if probe not in data or 'B_gsm' not in data[probe] or 'N_i' not in data[probe]:
         print(f"   ❌ Insufficient data for boundary detection")
         return []
-    
+
     times_b, b_data = data[probe]['B_gsm']
     times_n, n_data = data[probe]['N_i']
-    
+
     # Calculate magnetic field magnitude
     b_mag = np.sqrt(np.sum(b_data**2, axis=1))
-    
+
     # Convert times to timestamps
     if hasattr(times_b[0], 'timestamp'):
         time_stamps_b = np.array([t.timestamp() for t in times_b])
     else:
         time_stamps_b = times_b
-    
+
     if hasattr(times_n[0], 'timestamp'):
         time_stamps_n = np.array([t.timestamp() for t in times_n])
     else:
         time_stamps_n = times_n
-    
+
     # Interpolate density to magnetic field time base
     n_interp = np.interp(time_stamps_b, time_stamps_n, n_data)
-    
+
     # Boundary crossing criteria
     crossings = []
-    
+
     # 1. Magnetic field magnitude changes (SciPy-free smoothing)
     def moving_average(x, window=51):
         w = max(3, min(window, len(x)))
@@ -462,17 +682,17 @@ def detect_boundary_crossings(data, event_dt, probe='1'):
     # 2. Density changes
     n_smooth = moving_average(n_interp, 51)
     n_gradient = np.gradient(n_smooth)
-    
+
     # Find significant changes
     b_threshold = np.std(b_gradient) * 3
     n_threshold = np.std(n_gradient) * 3
-    
+
     # Look for simultaneous B and N changes
     event_timestamp = event_dt.timestamp()
     window = 300  # 5 minutes around event
-    
+
     mask = (time_stamps_b >= event_timestamp - window) & (time_stamps_b <= event_timestamp + window)
-    
+
     for i in np.where(mask)[0]:
         if abs(b_gradient[i]) > b_threshold and abs(n_gradient[i]) > n_threshold:
             crossing_time = datetime.fromtimestamp(time_stamps_b[i])
@@ -483,76 +703,85 @@ def detect_boundary_crossings(data, event_dt, probe='1'):
                 'b_value': b_mag[i],
                 'n_value': n_interp[i]
             })
-    
+
     print(f"   📍 Detected {len(crossings)} potential boundary crossings")
-    
+
     return crossings
 
 def get_event_positions(positions, event_dt):
     """Get spacecraft positions at event time"""
-    
+
     event_positions = {}
-    
+
     for probe in ['1', '2', '3', '4']:
         if probe in positions:
             times = positions[probe]['times']
             pos_data = positions[probe]['data']
-            
+
             event_timestamp = event_dt.timestamp()
-            
+
             if hasattr(times[0], 'timestamp'):
                 time_stamps = np.array([t.timestamp() for t in times])
             else:
                 time_stamps = times
-            
+
             closest_idx = np.argmin(np.abs(time_stamps - event_timestamp))
             event_pos = pos_data[closest_idx]
-            
+
             event_positions[probe] = event_pos
-    
+
     return event_positions
 
 def main():
     """Main analysis function"""
-    
+
     print("🔬 PUBLICATION-QUALITY MAGNETOPAUSE BOUNDARY ANALYSIS")
     print("=" * 65)
     print("Scientific Investigation: Multi-coordinate boundary crossing analysis")
     print("Event: 2019-01-27 Magnetopause Crossing")
     print()
-    
+
     # Event parameters
     event_time = '2019-01-27/12:30:50'
     event_dt = datetime(2019, 1, 27, 12, 30, 50)
     trange = ['2019-01-27/12:20:00', '2019-01-27/12:40:00']  # 20-minute analysis window
-    
+
     print(f"📡 Analysis period: {trange[0]} to {trange[1]}")
     print(f"🎯 Event time: {event_time}")
-    
+
     try:
         # Step 1: Load MEC data first
         positions, velocities = load_mec_data_first(trange, ['1', '2', '3', '4'])
-        
+
         # Step 2: Get spacecraft positions at event time
         event_positions = get_event_positions(positions, event_dt)
-        
+
         # Step 3: Load comprehensive science data
         data = load_comprehensive_science_data(trange, ['1', '2', '3', '4'])
-        
+
         # Step 4: Calculate boundary normal and LMN transformation
         lmn_matrix, mva_results = calculate_boundary_normal(data, event_dt)
-        
+
         # Step 5: Transform data to LMN coordinates
         data = transform_to_lmn(data, lmn_matrix)
-        
+
         # Step 6: Detect boundary crossings
         crossings = detect_boundary_crossings(data, event_dt)
-        
+
+        # Step 6a: Build and save FPI spectrograms for all probes/species
+        try:
+            spec_outdir = os.path.join('.', 'spectrograms')
+            inventory = build_and_save_fpi_spectrograms(trange, ['1','2','3','4'], outdir=spec_outdir, lowE_focus=1000.0)
+            print(f"   ✅ Built and saved FPI spectrograms to {spec_outdir}")
+            print(f"   Items: {len(inventory)}")
+        except Exception as e:
+            print(f"   ⚠️ Failed to build FPI spectrograms: {e}")
+
         print(f"\n✅ Data loading and analysis complete")
         print(f"   Ready for publication-quality visualization generation")
-        
+
         return data, event_positions, lmn_matrix, mva_results, crossings
-        
+
     except Exception as e:
         print(f"❌ Error in analysis: {str(e)}")
         import traceback

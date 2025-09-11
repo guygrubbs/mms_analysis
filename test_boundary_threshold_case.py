@@ -30,6 +30,13 @@ import matplotlib.colors as mcolors
 
 from pyspedas.projects import mms
 from pyspedas.projects.mms.particles.mms_part_getspec import mms_part_getspec
+# Optional: use pySPEDAS MPLPlotter helpers if available in environment
+try:
+    from pyspedas.tplot_tools.MPLPlotter.specplot import specplot_make_1d_ybins  # type: ignore
+except Exception:
+    specplot_make_1d_ybins = None  # not available; will use local bin-edge fallback
+
+from pyspedas.projects.mms.mms_config import CONFIG
 
 from pytplot import get_data, data_quants
 import os
@@ -252,6 +259,23 @@ def main():
     tr_start_dt = datetime.strptime(args.start.replace('/', ' '), '%Y-%m-%d %H:%M:%S').replace(tzinfo=timezone.utc)
     tr_end_dt = datetime.strptime(args.end.replace('/', ' '), '%Y-%m-%d %H:%M:%S').replace(tzinfo=timezone.utc)
     des_tr_start = (tr_start_dt - timedelta(minutes=15)).strftime('%Y-%m-%d/%H:%M:%S')
+    dis_tr_start = des_tr_start
+
+    # Ensure pySPEDAS looks in our local MMS data cache at ./mms_data (create if missing)
+    try:
+        data_root = os.path.abspath('mms_data')
+        os.makedirs(data_root, exist_ok=True)
+        CONFIG['local_data_dir'] = data_root
+        if args.debug:
+            CONFIG['debug_mode'] = True
+            print(f"[debug] CONFIG.local_data_dir set to {data_root}; debug_mode=True")
+    except Exception as e:
+        print(f"   ⚠️ Could not set CONFIG.local_data_dir: {e}")
+
+    dis_tr_end = (tr_end_dt + timedelta(minutes=15)).strftime('%Y-%m-%d/%H:%M:%S')
+    dis_trange = [dis_tr_start, dis_tr_end]
+
+
     des_tr_end = (tr_end_dt + timedelta(minutes=15)).strftime('%Y-%m-%d/%H:%M:%S')
     des_trange = [des_tr_start, des_tr_end]
 
@@ -730,43 +754,6 @@ def main():
         except Exception:
             pass
         return times, energy, data2d
-        # Now dist.shape[0] == Nt
-        Nt = dist.shape[0]
-        # Determine energy axis by matching energy length or choosing max varying axis
-        if energy is not None:
-            ne = energy.size
-            energy_axis = None
-            for ax in range(1, dist.ndim):
-                if dist.shape[ax] == ne:
-                    energy_axis = ax
-                    break
-        else:
-            # Pick the axis (excluding time) with largest size as energy
-            energy_axis = 1 if dist.ndim > 1 else None
-            ne = dist.shape[energy_axis] if energy_axis is not None else None
-            energy = np.arange(ne) if ne is not None else None
-        if energy_axis is None or ne is None:
-            return None
-        # Average over all other non-time, non-energy axes
-        axes_to_avg = tuple(ax for ax in range(1, dist.ndim) if ax != energy_axis)
-        if len(axes_to_avg) > 0:
-            spec2d = np.nanmean(dist, axis=axes_to_avg)
-        else:
-            spec2d = dist
-        # Ensure shape (Nt, Ne)
-        if spec2d.shape[0] == Nt and spec2d.shape[1] == ne:
-            pass
-        elif spec2d.shape[0] == Nt and spec2d.shape[-1] == ne:
-            spec2d = spec2d.reshape((Nt, ne))
-        elif spec2d.shape[0] == ne and spec2d.shape[1] == Nt:
-            spec2d = spec2d.T
-        else:
-            # Try to find last axis as energy
-            if spec2d.ndim == 2 and spec2d.shape[-1] == ne:
-                spec2d = spec2d
-            else:
-                return None
-        return times, np.asarray(energy), spec2d
 
     def plot_spectrogram(times, energy, spec2d, outname, title, interval_minutes=2, emax=None):
         fig, ax = plt.subplots(1, 1, figsize=(14, 4))
@@ -786,29 +773,39 @@ def main():
             Xe[-1] = Xc[-1] + (Xc[-1] - Xc[-2]) / 2.0
         else:
             Xe[:] = [Xc[0] - 1.0/1440, Xc[0] + 1.0/1440]
-        # Energy edges (geometric if strongly log-spaced)
-        En = np.asarray(energy)
-        Ee = np.empty(En.size + 1)
-        if En.size > 1 and np.all(En > 0) and (np.max(En)/max(np.min(En),1e-9) > 50):
-            Ee[1:-1] = np.sqrt(En[:-1] * En[1:])
-            Ee[0] = En[0]**2 / Ee[1]
-            Ee[-1] = En[-1]**2 / Ee[-2]
-        else:
-            Ee[1:-1] = 0.5 * (En[:-1] + En[1:]) if En.size > 1 else En[0]
-            Ee[0] = En[0] - (En[1] - En[0]) / 2.0 if En.size > 1 else En[0] - 1.0
-            Ee[-1] = En[-1] + (En[-1] - En[-2]) / 2.0 if En.size > 1 else En[-1] + 1.0
+        # Energy edges (prefer pySPEDAS helper if available)
+        ybins = None
+        if specplot_make_1d_ybins is not None:
+            try:
+                ybins, _ = specplot_make_1d_ybins(spec2d, energy, ylog=True, no_regrid=True)
+            except Exception:
+                ybins = None
+        if ybins is None or len(np.atleast_1d(ybins)) < 2:
+            # Fallback to geometric/midpoints
+            En = np.asarray(energy)
+            Ee = np.empty(En.size + 1)
+            if En.size > 1 and np.all(En > 0) and (np.max(En)/max(np.min(En),1e-9) > 50):
+                Ee[1:-1] = np.sqrt(En[:-1] * En[1:])
+                Ee[0] = En[0]**2 / Ee[1]
+                Ee[-1] = En[-1]**2 / Ee[-2]
+            else:
+                Ee[1:-1] = 0.5 * (En[:-1] + En[1:]) if En.size > 1 else En[0]
+                Ee[0] = En[0] - (En[1] - En[0]) / 2.0 if En.size > 1 else En[0] - 1.0
+                Ee[-1] = En[-1] + (En[-1] - En[-2]) / 2.0 if En.size > 1 else En[-1] + 1.0
+            ybins = Ee
         # Color scaling
         vmin = np.nanpercentile(spec2d, 5)
         vmax = np.nanpercentile(spec2d, 99)
         # Handle non-positive values for log
         spec_plot = np.where(spec2d <= 0, np.nan, spec2d)
-        pcm = ax.pcolormesh(Xe, Ee, spec_plot.T, shading='auto', cmap='viridis',
+        pcm = ax.pcolormesh(Xe, ybins, spec_plot.T, shading='auto', cmap='viridis',
                             norm=mcolors.LogNorm(vmin=max(vmin, 1e-2), vmax=max(vmax, 1.0)))
         cbar = fig.colorbar(pcm, ax=ax, pad=0.01)
         cbar.set_label('Flux / Counts (arb.)')
         ax.set_ylabel('Energy (eV)')
         safe_format_time_axis(ax, interval_minutes=interval_minutes)
         ax.set_xlabel('Time (UT)')
+        ax.set_yscale('log')
         plt.tight_layout()
         plt.savefig(outname, dpi=300, bbox_inches='tight', facecolor='white')
         plt.close()
@@ -834,10 +831,10 @@ def main():
                         # For DES, use widened window and no time_clip to ensure names register
                         if species == 'des':
                             mms.mms_load_fpi(trange=des_trange, probe=probe, data_rate=rate, level='l2',
-                                             datatype=f'{species}-energyspectr-omni', varformat='*energyspectr_omni*', time_clip=False)
+                                             datatype=f'{species}-energyspectr-omni', varformat='*energyspectr_omni*', time_clip=False, no_update=True)
                         else:
-                            mms.mms_load_fpi(trange=trange, probe=probe, data_rate=rate, level='l2',
-                                             datatype=f'{species}-energyspectr-omni', varformat='*energyspectr_omni*', time_clip=True)
+                            mms.mms_load_fpi(trange=dis_trange, probe=probe, data_rate=rate, level='l2',
+                                             datatype=f'{species}-energyspectr-omni', varformat='*energyspectr_omni*', time_clip=False, no_update=True)
                         if args.debug:
                             print(f"[debug] Loaded {species}-energyspectr-omni ({rate}) for MMS{probe}")
                         # Only consider it 'loaded' if keys actually appear
@@ -860,10 +857,10 @@ def main():
                     try:
                         if species == 'des':
                             mms.mms_load_fpi(trange=des_trange, probe=probe, data_rate='fast', level='l2',
-                                              datatype=f'{species}-moms', varformat='*energyspectr_omni*', time_clip=False)
+                                              datatype=f'{species}-moms', varformat='*energyspectr_omni*', time_clip=False, no_update=True)
                         else:
                             mms.mms_load_fpi(trange=trange, probe=probe, data_rate='fast', level='l2',
-                                              datatype=f'{species}-moms', varformat='*energyspectr_omni*', time_clip=True)
+                                              datatype=f'{species}-moms', varformat='*energyspectr_omni*', time_clip=True, no_update=True)
                         if args.debug:
                             print(f"[debug] Loaded {species}-moms (fast,l2) for MMS{probe} with varformat=*energyspectr_omni*")
                     except Exception as e:
@@ -874,10 +871,10 @@ def main():
                         try:
                             if species == 'des':
                                 mms.mms_load_fpi(trange=des_trange, probe=probe, data_rate='brst', level='l2',
-                                                 datatype=f'{species}-qmoms', varformat='*energyspectr_omni*', time_clip=False)
+                                                 datatype=f'{species}-qmoms', varformat='*energyspectr_omni*', time_clip=False, no_update=True)
                             else:
                                 mms.mms_load_fpi(trange=trange, probe=probe, data_rate='brst', level='l2',
-                                                 datatype=f'{species}-qmoms', varformat='*energyspectr_omni*', time_clip=True)
+                                                 datatype=f'{species}-qmoms', varformat='*energyspectr_omni*', time_clip=True, no_update=True)
                             if args.debug:
                                 print(f"[debug] Loaded {species}-qmoms (brst,l2) for MMS{probe} with varformat=*energyspectr_omni*")
                         except Exception as e:
@@ -889,10 +886,10 @@ def main():
                             try:
                                 if species == 'des':
                                     mms.mms_load_fpi(trange=des_trange, probe=probe, data_rate=rate, level='l2',
-                                                     datatype=f'{species}-energyspectr', varformat='*energyspectr*', time_clip=False)
+                                                     datatype=f'{species}-energyspectr', varformat='*energyspectr*', time_clip=False, no_update=True)
                                 else:
                                     mms.mms_load_fpi(trange=trange, probe=probe, data_rate=rate, level='l2',
-                                                     datatype=f'{species}-energyspectr', time_clip=True)
+                                                     datatype=f'{species}-energyspectr', time_clip=True, no_update=True)
                                 if args.debug:
                                     print(f"[debug] Loaded {species}-energyspectr components ({rate}) for MMS{probe}")
                             except Exception as e:
@@ -903,7 +900,7 @@ def main():
                     if not loaded_omni and species == 'des':
                         try:
                             mms.mms_load_fpi(trange=des_trange, probe=probe, data_rate='fast', level='ql',
-                                             datatype='des', varformat='*energyspectr_omni*', time_clip=False)
+                                             datatype='des', varformat='*energyspectr_omni*', time_clip=False, no_update=True)
                             if args.debug:
                                 print(f"[debug] Loaded des (fast,ql) for MMS{probe} with varformat=*energyspectr_omni* (fallback)")
                         except Exception as e:
@@ -916,36 +913,39 @@ def main():
                     e_var = f'mms{probe}_{species}_energyspectr_omni_fast'
                 if e_var not in data_quants:
                     e_var = f'mms{probe}_{species}_energyspectr_omni_srvy'
-                # Debug: list available DES keys (post-load visibility)
+                # Debug: list available species keys (post-load visibility)
                 if args.debug:
                     pref1 = f"mms{probe}_{species}_"
                     pref2 = f"mms{probe}_fpi_{species}_"
-                    keys = [k for k in data_quants.keys() if (k.startswith(pref1) or k.startswith(pref2)) and 'des' in k if species=='des' or 'dis' in k]
+                    keys = [k for k in data_quants.keys() if (k.startswith(pref1) or k.startswith(pref2))]
                     en_keys = [k for k in keys if 'energy' in k]
                     e_spec = [k for k in keys if 'energyspectr' in k]
+                    dist_keys = [k for k in keys if '_dist_' in k]
                     if keys:
-                        print(f"[debug] Available {species.upper()} keys for MMS{probe}: {keys}")
+                        print(f"[debug] Available keys for MMS{probe} {species}: {keys}")
                         if e_spec:
                             print(f"[debug] energyspectr keys: {e_spec}")
                         if en_keys:
                             print(f"[debug] energy table keys: {en_keys}")
+                        if dist_keys:
+                            print(f"[debug] distribution keys: {dist_keys}")
                     else:
-                        print(f"[debug] No {species.upper()} keys currently in pytplot for MMS{probe}")
+                        print(f"[debug] No keys currently in pytplot for MMS{probe} {species}")
                 spec = extract_spectrogram(e_var, probe=probe, species=species)
                 # If still none, try building energy spectrogram via pySPEDAS from dist (real data only)
                 if spec is None:
                     try:
-                        # Build spectrograms strictly from real distributions via pySPEDAS; prefer FAST for speed
+                        # Build spectrograms strictly from real distributions via pySPEDAS; prefer BRST for publication
                         sr = 'e' if species=='des' else 'i'
                         out_vars = mms_part_getspec(
                             instrument='fpi', probe=probe,
-                            species=sr, data_rate='fast',
-                            trange=trange, output=['energy'], units='eflux',
+                            species=sr, data_rate='brst',
+                            trange=trange, output=['energy','pa'], units='eflux',
                             center_measurement=False, spdf=False,
                             correct_photoelectrons=False, disable_photoelectron_corrections=True,
                             internal_photoelectron_corrections=False,
-                            regrid=[32,16], no_regrid=True, prefix='', suffix='')
-                        in_tname = f"mms{probe}_d{sr}s_dist_fast"
+                            no_regrid=False, prefix='', suffix='')
+                        in_tname = f"mms{probe}_d{sr}s_dist_brst"
                         energy_var = in_tname + "_energy"
                         # If returned list provided, use it to find the energy var
                         cand_var = None
@@ -962,14 +962,75 @@ def main():
                                     cand_var = matches[0]
                         if cand_var is None and energy_var in data_quants:
                             cand_var = energy_var
+                        # If BRST didn't produce, try FAST via pySPEDAS
+                        if cand_var is None:
+                            try:
+                                out_vars_b = mms_part_getspec(
+                                    instrument='fpi', probe=probe,
+                                    species=sr, data_rate='fast',
+                                    trange=trange, output=['energy','pa'], units='eflux',
+                                    center_measurement=False, spdf=False,
+                                    correct_photoelectrons=False, disable_photoelectron_corrections=True,
+                                    internal_photoelectron_corrections=False,
+                                    no_regrid=False, prefix='', suffix='')
+                                in_tname_b = f"mms{probe}_d{sr}s_dist_fast"
+                                energy_var_b = in_tname_b + "_energy"
+                                # prefer exact match
+                                if isinstance(out_vars_b, list):
+                                    for v in out_vars_b:
+                                        if v == energy_var_b:
+                                            cand_var = v
+                                            in_tname = in_tname_b
+                                            break
+                                    if cand_var is None:
+                                        matches = [v for v in out_vars_b if v.endswith('_energy') and f"mms{probe}_d{sr}s_dist" in v]
+                                        if matches:
+                                            cand_var = matches[0]
+                                            in_tname = in_tname_b
+                                if cand_var is None and energy_var_b in data_quants:
+                                    cand_var = energy_var_b
+                                    in_tname = in_tname_b
+                            except Exception as e:
+                                if args.debug:
+                                    print(f"[debug] pySPEDAS BRST build failed for MMS{probe} {species}: {e}")
+                        # If still none, try SRVY via pySPEDAS as a last resort (MMS4 often lacks BRST after ~2017)
+                        if cand_var is None:
+                            try:
+                                out_vars_c = mms_part_getspec(
+                                    instrument='fpi', probe=probe,
+                                    species=sr, data_rate='srvy',
+                                    trange=trange, output=['energy','pa'], units='eflux',
+                                    center_measurement=False, spdf=False,
+                                    correct_photoelectrons=False, disable_photoelectron_corrections=True,
+                                    internal_photoelectron_corrections=False,
+                                    no_regrid=False, prefix='', suffix='')
+                                in_tname_c = f"mms{probe}_d{sr}s_dist_srvy"
+                                energy_var_c = in_tname_c + "_energy"
+                                if isinstance(out_vars_c, list):
+                                    for v in out_vars_c:
+                                        if v == energy_var_c:
+                                            cand_var = v
+                                            in_tname = in_tname_c
+                                            break
+                                    if cand_var is None:
+                                        matches = [v for v in out_vars_c if v.endswith('_energy') and f"mms{probe}_d{sr}s_dist" in v]
+                                        if matches:
+                                            cand_var = matches[0]
+                                            in_tname = in_tname_c
+                                if cand_var is None and energy_var_c in data_quants:
+                                    cand_var = energy_var_c
+                                    in_tname = in_tname_c
+                            except Exception as e:
+                                if args.debug:
+                                    print(f"[debug] pySPEDAS SRVY build failed for MMS{probe} {species}: {e}")
                         if cand_var:
                             res = get_data(cand_var)
                             if isinstance(res, dict):
                                 times = ensure_datetime_format(res.get('x'))
-                                energy = res.get('y')
-                                spec2d = res.get('z')
+                                spec2d = res.get('y')  # pySPEDAS stores Z in 'y'
+                                energy = res.get('v')  # energy vector in 'v'
                             else:
-                                times, energy, spec2d = res[0], res[1], res[2]
+                                times, spec2d, energy = res[0], res[1], (res[2] if len(res) > 2 else None)
                             # Clip to analysis window
                             mask = [(t >= tr_start_dt) and (t <= tr_end_dt) for t in times]
                             if any(mask):
@@ -985,6 +1046,7 @@ def main():
                         if args.debug:
                             print(f"[debug] pySPEDAS build from dist failed for MMS{probe} {species}: {e}")
 
+                if spec is None:
                     spec = extract_spectrogram('', probe=probe, species=species)
                 if spec is None:
                     # Fallback: build from distributions
@@ -1009,6 +1071,30 @@ def main():
                                  outname=f'fpi_{species}_spectrogram_lowE_mms{probe}.png',
                                  title=f'FPI {sp_name} Spectrogram (≤{int(lowE_focus)} eV) — MMS{probe}',
                                  interval_minutes=2, emax=lowE_focus)
+                # If a pitch-angle spectrogram exists from pySPEDAS, save it as well
+                pa_var = in_tname + '_pa'
+                if pa_var in data_quants:
+                    pa_res = get_data(pa_var)
+                    try:
+                        if isinstance(pa_res, dict):
+                            pa_times = ensure_datetime_format(pa_res.get('x'))
+                            pa_spec = pa_res.get('y')  # Z in 'y'
+                            pa_energy = pa_res.get('v')  # energy vector(s) in 'v'
+                        else:
+                            pa_times, pa_spec, pa_energy = pa_res[0], pa_res[1], (pa_res[2] if len(pa_res)>2 else None)
+                        plot_spectrogram(pa_times, pa_energy, pa_spec,
+                                         outname=f'fpi_{species}_pad_full_mms{probe}.png',
+                                         title=f'FPI {sp_name} PAD (Full) — MMS{probe}',
+                                         interval_minutes=2, emax=None)
+                        plot_spectrogram(pa_times, pa_energy, pa_spec,
+                                         outname=f'fpi_{species}_pad_lowE_mms{probe}.png',
+                                         title=f'FPI {sp_name} PAD (≤{int(lowE_focus)} eV) — MMS{probe}',
+                                         interval_minutes=2, emax=lowE_focus)
+                        spectro_diag_rows.append([species, probe, in_tname, pa_var, f"{len(pa_energy)}bins", "BUILT_FROM_DIST", pa_times[0].strftime('%Y-%m-%d %H:%M:%S'), pa_times[-1].strftime('%Y-%m-%d %H:%M:%S'), len(pa_times)])
+                    except Exception as e:
+                        if args.debug:
+                            print(f"[debug] PAD plotting failed for {pa_var}: {e}")
+
     except Exception as e:
         print(f"   ⚠️ FPI spectrogram warning: {e}")
 
@@ -1084,13 +1170,31 @@ def main():
                     rec = normal_geom_diag.get('recommended_method', '')
                     a1 = normal_geom_diag.get('angle_to_PC1', '')
                     a2 = normal_geom_diag.get('angle_to_PC2', '')
-                    a3 = normal_geom_diag.get('angle_to_PC3', '')
-                    ar = normal_geom_diag.get('angle_to_radial', '')
-                    aa = normal_geom_diag.get('angle_to_along_track', '')
-                else:
-                    rec = a1 = a2 = a3 = ar = aa = ''
-                row_out = row[:9] + [overlaps, conf, rec, a1, a2, a3, ar, aa]
-                dw.writerow(row_out)
+        # Create a compact per-probe inventory CSV of what was found/used
+        try:
+            with open('spectrogram_inventory.csv', 'w', newline='') as invf:
+                invw = csv.writer(invf)
+                invw.writerow(['probe','species','source','candidate_var','energy_var','bins','t_start_UT','t_end_UT','n_times'])
+                for row in spectro_diag_rows:
+                    if len(row) >= 9:
+                        species, probe, cand, evar, bins, source, t0, t1, nt = row[:9]
+                        invw.writerow([probe, species, source, cand, evar, bins, t0, t1, nt])
+        except Exception as e:
+            if args.debug:
+                print(f"[debug] Could not write spectrogram_inventory.csv: {e}")
+
+        # Post-save checks for key figures
+        for f in ['boundary_threshold_overview.png','boundary_timing_speed_thickness.png','mms3_shear_angles.png']:
+            if not os.path.exists(f):
+                print(f"   ⚠️ Expected figure missing after save: {f}")
+
+                a3 = normal_geom_diag.get('angle_to_PC3', '')
+                ar = normal_geom_diag.get('angle_to_radial', '')
+                aa = normal_geom_diag.get('angle_to_along_track', '')
+            else:
+                rec = a1 = a2 = a3 = ar = aa = ''
+            row_out = row[:9] + [overlaps, conf, rec, a1, a2, a3, ar, aa]
+            dw.writerow(row_out)
     except Exception:
         print("   ⚠️ Could not write spectrogram_diagnostics.csv (see logs above)")
         pass
