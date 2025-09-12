@@ -33,17 +33,18 @@ def _load(instr: str, rates: List[str], *, trange, probe,
             continue
 
 
-def _load_state(trange, probe, *, download_only=False):
+def _load_state(trange, probe, *, download_only=False, mec_cache: dict | None = None):
     """
     Load spacecraft ephemeris data - prioritizes MEC over other sources
 
     MEC (Magnetic Electron and Ion Characteristics) provides the most accurate
     spacecraft positions and velocities and should be used as the authoritative
     source for all spacecraft ordering and coordinate transformations.
+    If mec_cache is provided, store POS/VEL arrays immediately to avoid
+    later discovery issues in the harvest step.
     """
     try:
         # Primary: Load MEC ephemeris data (most accurate)
-        # Use the standard mms.mms_load_mec function which works reliably
         kw_mec = dict(
             trange=trange,
             probe=probe,
@@ -59,17 +60,30 @@ def _load_state(trange, probe, *, download_only=False):
 
         # Verify that MEC variables were actually loaded
         from pytplot import data_quants
+        from pyspedas import get_data as _gd
         mec_vars_loaded = [var for var in data_quants.keys()
                           if f'mms{probe}_mec' in var and ('r_' in var or 'v_' in var)]
 
         if len(mec_vars_loaded) > 0:
             print(f"✅ MEC ephemeris loaded for MMS{probe}: {len(mec_vars_loaded)} variables")
             print(f"   Variables: {mec_vars_loaded}")
+            # Optionally cache POS/VEL now
+            if mec_cache is not None:
+                key = f'mms{probe}'
+                # Prefer GSM, fallback GSE
+                pos_name = key + '_mec_r_gsm'
+                if pos_name not in data_quants:
+                    pos_name = key + '_mec_r_gse' if key + '_mec_r_gse' in data_quants else None
+                vel_name = key + '_mec_v_gsm'
+                if vel_name not in data_quants:
+                    vel_name = key + '_mec_v_gse' if key + '_mec_v_gse' in data_quants else None
+                pos_tuple = _gd(pos_name) if pos_name else (None, None)
+                vel_tuple = _gd(vel_name) if vel_name else (None, None)
+                mec_cache[str(probe)] = {'pos': pos_tuple, 'vel': vel_tuple}
             return result
         else:
             print(f"⚠️ MEC loading returned success but no variables found for MMS{probe}")
             print(f"   Available variables: {[v for v in data_quants.keys() if f'mms{probe}' in v]}")
-            # Don't raise exception - fall back to other methods
             raise Exception("No MEC variables loaded")
 
     except Exception as e:
@@ -186,8 +200,9 @@ def load_event(
         prefer_rates.append('srvy')
 
     # ----- 2) download phase -------------------------------------------------
+    # For FGM, avoid get_support_data to ensure B variables are created reliably
     _load('fgm',  fgm_rates,  trange=trange, probe=probes,
-          level='l2', get_support_data=True, time_clip=True,
+          level='l2', get_support_data=False, time_clip=True,
           download_only=download_only)
     _load('fpi',  fpi_rates,  trange=trange, probe=probes,
           level='l2', datatype='dis-moms', time_clip=True,
@@ -207,9 +222,10 @@ def load_event(
               level='l2', datatype='scpot', time_clip=True,
               download_only=download_only)
 
+    mec_cache: dict[str, dict] = {}
     if include_ephem:
         for pr in probes:
-            _load_state(trange, pr, download_only=download_only)
+            _load_state(trange, pr, download_only=download_only, mec_cache=mec_cache)
 
     if download_only:
         return {p: {} for p in probes}
@@ -235,32 +251,35 @@ def load_event(
             evt[p]['V_i_gse'] = _tp(f'{key}_dis_bulkv_gse_{suff}')
 
         # --- B-field (vector, 3-column preferred) ---------------------------
-        # try exact 3-column first …
+        # try GSM exact 3-column first …
         B_var = _first_valid_var([f'{key}_fgm_b_gsm_*'], expect_cols=3)
 
         if B_var is None:
             # fall back to *any* b_gsm_* – often 4-columns (|B| in col-3)
             B_var = _first_valid_var([f'{key}_fgm_b_gsm_*'])
 
-            if B_var is not None:
-                tB, dB = _tp(B_var)
-                # keep only the first 3 components if there are ≥3
-                if dB.ndim == 2 and dB.shape[1] >= 3:
-                    dB = dB[:, :3]
-                evt[p]['B_gsm'] = _trim_to_match(tB, dB)
+        if B_var is None:
+            # try GSE as a fallback
+            B_var = _first_valid_var([f'{key}_fgm_b_gse_*'], expect_cols=3)
+            if B_var is None:
+                B_var = _first_valid_var([f'{key}_fgm_b_gse_*'])
 
-            else:
-                # nothing at all found → fabricate NaN placeholder so code runs
-                warnings.warn(f'[WARN] B-field absent for MMS{p}')
-                t_stub = evt[p]['N_tot'][0]
-                if t_stub is None:
-                    t_stub = np.linspace(0.0, 1.0, 10)
-                evt[p]['B_gsm'] = (
-                    t_stub,
-                    np.full((len(t_stub), 3), np.nan)
-                )
+        if B_var is not None:
+            tB, dB = _tp(B_var)
+            # keep only the first 3 components if there are ≥3
+            if dB.ndim == 2 and dB.shape[1] >= 3:
+                dB = dB[:, :3]
+            evt[p]['B_gsm'] = _trim_to_match(tB, dB)
         else:
-            evt[p]['B_gsm'] = _tp(B_var)
+            # nothing at all found → fabricate NaN placeholder so code runs
+            warnings.warn(f'[WARN] B-field absent for MMS{p}')
+            t_stub = evt[p]['N_tot'][0]
+            if t_stub is None:
+                t_stub = np.linspace(0.0, 1.0, 10)
+            evt[p]['B_gsm'] = (
+                t_stub,
+                np.full((len(t_stub), 3), np.nan)
+            )
 
         # --------------------------------------------------------------------
         # placeholders that depend on B_gsm’s shape (now guaranteed to exist)
@@ -302,92 +321,86 @@ def load_event(
 
         # ephemeris - prioritize MEC as authoritative source
         if include_ephem:
-            # Priority order: MEC (most accurate) -> definitive -> state -> orbit attitude
-            # Check for actual MEC variable names that get loaded
-            pos_patterns = [
-                f'{key}_mec_r_gsm',      # MEC GSM position (primary)
-                f'{key}_mec_r_gse',      # MEC GSE position (backup)
-                f'{key}_mec_pos_gsm',    # Alternative MEC naming
-                f'{key}_mec_pos_gse',    # Alternative MEC naming
-                f'{key}_defeph_pos',     # Definitive ephemeris
-                f'{key}_state_pos_gsm',  # State position
-                f'{key}_orbatt_r_gsm'    # Orbit attitude
-            ]
+            # First, use cached MEC POS/VEL from the load phase if present
+            cached = mec_cache  # captured from outer scope
+            pos_tuple = cached.get(p, {}).get('pos') if cached else None
+            vel_tuple = cached.get(p, {}).get('vel') if cached else None
 
-            print(f"   🔍 Searching for position variables for MMS{p}:")
-            print(f"      Patterns: {pos_patterns}")
-            available_vars = [v for v in data_quants.keys() if key in v]
-            print(f"      Available {key} variables: {available_vars}")
-
-            # Check specifically for MEC variables
-            mec_vars = [v for v in data_quants.keys() if f'{key}_mec' in v]
-            print(f"      MEC variables in data_quants: {mec_vars}")
-
-            pos_v = _first_valid_var(pos_patterns, expect_cols=3)
-            print(f"      Found position variable: {pos_v}")
-
-            # If standard search failed, try direct MEC access
-            if pos_v is None:
-                # Try direct access to MEC variables
-                direct_mec_pos = f'{key}_mec_r_gsm'
-                if direct_mec_pos in data_quants:
-                    pos_v = direct_mec_pos
-                    print(f"      ✅ Found MEC position via direct access: {pos_v}")
-                else:
-                    print(f"      ❌ Direct MEC access also failed for {direct_mec_pos}")
-
-            # Also try to get velocity from MEC (for formation analysis)
-            vel_patterns = [
-                f'{key}_mec_v_gsm',      # MEC GSM velocity (primary)
-                f'{key}_mec_v_gse',      # MEC GSE velocity (backup)
-                f'{key}_mec_vel_gsm',    # Alternative MEC naming
-                f'{key}_mec_vel_gse',    # Alternative MEC naming
-                f'{key}_defeph_vel',     # Definitive velocity
-                f'{key}_state_vel_gsm'   # State velocity
-            ]
-
-            print(f"   🔍 Searching for velocity variables for MMS{p}:")
-            print(f"      Patterns: {vel_patterns}")
-
-            vel_v = _first_valid_var(vel_patterns, expect_cols=3)
-            print(f"      Found velocity variable: {vel_v}")
-
-            # If standard search failed, try direct MEC access
-            if vel_v is None:
-                direct_mec_vel = f'{key}_mec_v_gsm'
-                if direct_mec_vel in data_quants:
-                    vel_v = direct_mec_vel
-                    print(f"      ✅ Found MEC velocity via direct access: {vel_v}")
-                else:
-                    print(f"      ❌ Direct MEC access also failed for {direct_mec_vel}")
-
-            # Process position data
-            if pos_v:
-                times, pos_data = _tp(pos_v)
-                print(f"   📍 Found position data for MMS{p}: {pos_v}")
-                print(f"      Shape: {pos_data.shape}, NaN count: {np.isnan(pos_data).sum()}")
-
-                # MEC data is typically in km - verify and convert if needed
+            if pos_tuple and pos_tuple[0] is not None and pos_tuple[1] is not None:
+                times, pos_data = pos_tuple
                 if np.nanmax(np.abs(pos_data)) < 100:  # Likely in Earth radii
-                    pos_data = pos_data * 6371.0  # Convert RE to km
-                    print(f"      Converted from RE to km")
-
+                    pos_data = pos_data * 6371.0
                 evt[p]['POS_gsm'] = (times, pos_data)
-            else:
-                print(f"   ⚠️ No position data found for MMS{p} - using NaN placeholder")
-                evt[p]['POS_gsm'] = (t_stub, np.full((len(t_stub), 3), np.nan))
+            if vel_tuple and vel_tuple[0] is not None and vel_tuple[1] is not None:
+                evt[p]['VEL_gsm'] = vel_tuple
 
-            # Process velocity data
-            if vel_v:
-                times, vel_data = _tp(vel_v)
-                print(f"   🚀 Found velocity data for MMS{p}: {vel_v}")
-                print(f"      Shape: {vel_data.shape}, NaN count: {np.isnan(vel_data).sum()}")
+            # If cache did not provide, fall back to pattern search
+            if 'POS_gsm' not in evt[p] or 'VEL_gsm' not in evt[p]:
+                # Priority order: MEC (most accurate) -> definitive -> state -> orbit attitude
+                pos_patterns = [
+                    f'{key}_mec_r_gsm',      # MEC GSM position (primary)
+                    f'{key}_mec_r_gse',      # MEC GSE position (backup)
+                    f'{key}_mec_pos_gsm',    # Alternative MEC naming
+                    f'{key}_mec_pos_gse',    # Alternative MEC naming
+                    f'{key}_defeph_pos',     # Definitive ephemeris
+                    f'{key}_state_pos_gsm',  # State position
+                    f'{key}_orbatt_r_gsm'    # Orbit attitude
+                ]
 
-                # MEC velocity is typically in km/s
-                evt[p]['VEL_gsm'] = (times, vel_data)
-            else:
-                print(f"   ⚠️ No velocity data found for MMS{p} - using NaN placeholder")
-                evt[p]['VEL_gsm'] = (t_stub, np.full((len(t_stub), 3), np.nan))
+                print(f"   🔍 Searching for position variables for MMS{p}:")
+                print(f"      Patterns: {pos_patterns}")
+                available_vars = [v for v in data_quants.keys() if key in v]
+                print(f"      Available {key} variables: {available_vars}")
+
+                # Check specifically for MEC variables
+                mec_vars = [v for v in data_quants.keys() if f'{key}_mec' in v]
+                print(f"      MEC variables in data_quants: {mec_vars}")
+
+                pos_v = _first_valid_var(pos_patterns, expect_cols=3)
+                print(f"      Found position variable: {pos_v}")
+
+                # If standard search failed, try direct MEC access
+                if pos_v is None:
+                    direct_mec_pos = f'{key}_mec_r_gsm'
+                    if direct_mec_pos in data_quants:
+                        pos_v = direct_mec_pos
+                        print(f"      ✅ Found MEC position via direct access: {pos_v}")
+
+                # Also try to get velocity from MEC (for formation analysis)
+                vel_patterns = [
+                    f'{key}_mec_v_gsm',      # MEC GSM velocity (primary)
+                    f'{key}_mec_v_gse',      # MEC GSE velocity (backup)
+                    f'{key}_mec_vel_gsm',    # Alternative MEC naming
+                    f'{key}_mec_vel_gse',    # Alternative MEC naming
+                    f'{key}_defeph_vel',     # Definitive velocity
+                    f'{key}_state_vel_gsm'   # State velocity
+                ]
+
+                print(f"   🔍 Searching for velocity variables for MMS{p}:")
+                print(f"      Patterns: {vel_patterns}")
+
+                vel_v = _first_valid_var(vel_patterns, expect_cols=3)
+                print(f"      Found velocity variable: {vel_v}")
+
+                if 'POS_gsm' not in evt[p]:
+                    if pos_v:
+                        times, pos_data = _tp(pos_v)
+                        print(f"   📍 Found position data for MMS{p}: {pos_v}")
+                        if np.nanmax(np.abs(pos_data)) < 100:
+                            pos_data = pos_data * 6371.0
+                        evt[p]['POS_gsm'] = (times, pos_data)
+                    else:
+                        print(f"   ⚠️ No position data found for MMS{p} - using NaN placeholder")
+                        evt[p]['POS_gsm'] = (t_stub, np.full((len(t_stub), 3), np.nan))
+
+                if 'VEL_gsm' not in evt[p]:
+                    if vel_v:
+                        times, vel_data = _tp(vel_v)
+                        print(f"   🚀 Found velocity data for MMS{p}: {vel_v}")
+                        evt[p]['VEL_gsm'] = (times, vel_data)
+                    else:
+                        print(f"   ⚠️ No velocity data found for MMS{p} - using NaN placeholder")
+                        evt[p]['VEL_gsm'] = (t_stub, np.full((len(t_stub), 3), np.nan))
 
         # Replace placeholders if earlier ion density missing
         if evt[p].get('N_tot', (None,))[0] is None:
@@ -702,6 +715,56 @@ def force_load_fpi_spectrogram(
                 except Exception:
                     continue
             if energy_var:
+                break
+
+    # 5) If still missing, attempt QL level as last resort
+    if not omni and not (flux4d or flux3d):
+        try_levels = ['ql']
+        for lvl in try_levels:
+            # Try spectr at QL
+            for r_try in omni_rates:
+                try:
+                    mms.fpi(trange=trange, probe=probe, data_rate=r_try, datatype=f"{species}-spectr", level=lvl, time_clip=time_clip)
+                except Exception:
+                    continue
+                omni = _first_omni_by_rate(base, omni_rates)
+                if omni:
+                    source = f'{lvl}-spectr'
+                    used_rate = r_try
+                    break
+            # Try dist at QL
+            if not omni:
+                for r_try in rates:
+                    try:
+                        mms.fpi(trange=trange, probe=probe, data_rate=r_try, datatype=f"{species}-dist", level=lvl, time_clip=time_clip)
+                    except Exception:
+                        continue
+                    found4 = _first_flux4d_by_rate(base, [r_try])
+                    found3 = _first_flux3d_by_rate(base, [r_try])
+                    flux4d = found4 or flux4d
+                    flux3d = found3 or flux3d
+                    if (flux4d or flux3d) and used_rate is None:
+                        used_rate = r_try
+                        source = f'{lvl}-dist'
+                        break
+            # Attempt to locate energy axis after QL attempt
+            if energy_var is None:
+                # reuse inference path
+                cand_var = flux4d or flux3d or omni
+                qa = data_quants.get(cand_var) if cand_var else None
+                if qa is not None and hasattr(qa, 'coords'):
+                    for cname in ('energy','e_energy','v','v1','v2','w','spec_bins'):
+                        coord = qa.coords.get(cname) if hasattr(qa.coords, 'get') else qa.coords[cname] if cname in qa.coords else None
+                        try:
+                            arr = np.array(coord)
+                            if arr is not None and arr.size > 4:
+                                energy_var = f"{base}_energy_inferred"
+                                import xarray as xr
+                                data_quants[energy_var] = xr.DataArray(arr, dims=(f"{cname}_dim",))
+                                break
+                        except Exception:
+                            continue
+            if omni or flux4d or flux3d:
                 break
 
     if verbose:
