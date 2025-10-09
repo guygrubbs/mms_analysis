@@ -11,7 +11,6 @@ import matplotlib.pyplot as plt
 # Ensure any accidental plt.show() during tests is a no-op
 plt.show = lambda *args, **kwargs: None
 
-import importlib.util
 import pytest
 import numpy as np
 import sys
@@ -19,13 +18,24 @@ import faulthandler
 from datetime import datetime
 
 
-def pytest_addoption(parser):
-    """Provide stub timeout options only when pytest-timeout isn't installed."""
+def _option_is_registered(parser, option):
+    """Return True when an option string is already known to pytest's parser."""
 
-    # When pytest-timeout is present, it already defines these CLI options.
-    # Import checks are reliable regardless of when the plugin registers its
-    # options, so short-circuit in that scenario to avoid argparse conflicts.
-    if importlib.util.find_spec("pytest_timeout") is not None:
+    option_parser = parser._getparser()
+    option_actions = getattr(option_parser, "_option_string_actions", {})
+    return option in option_actions
+
+
+def pytest_addoption(parser):
+    """Provide stub timeout options only when pytest-timeout hasn't already added them."""
+
+    # ``pytest-timeout`` registers ``--timeout``/``--timeout-method`` during option parsing.
+    # In CI this plugin is available, so we skip our local stubs when those option strings
+    # already exist to avoid argparse conflicts while still supporting local setups where the
+    # plugin isn't installed.
+    if _option_is_registered(parser, "--timeout") or _option_is_registered(
+        parser, "--timeout-method"
+    ):
         return
 
     parser.addoption(
