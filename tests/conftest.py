@@ -17,6 +17,12 @@ import sys
 import faulthandler
 from datetime import datetime
 
+
+def pytest_addoption(parser):
+    """Provide stub timeout options when pytest-timeout is unavailable."""
+    parser.addoption('--timeout', action='store', default=None, help='stub timeout (seconds)')
+    parser.addoption('--timeout-method', action='store', default='thread', help='stub timeout method')
+
 # Auto-close figures after each test to prevent resource buildup
 @pytest.fixture(autouse=True)
 def _close_figures():

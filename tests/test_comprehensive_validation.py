@@ -41,9 +41,11 @@ def test_complete_workflow():
         3 + np.sin(0.1*t[crossing_idx:])
     ])
     
-    # Synthetic densities
-    he_density = np.ones(n_points) * 0.1
-    he_density[crossing_idx:] = 0.35  # Enhancement in magnetosheath
+    # Synthetic densities (magnetosheath → magnetosphere)
+    he_density = np.ones(n_points) * 0.32
+    he_density[:crossing_idx] = 0.08  # Sheath depleted He⁺
+    ni_density = np.ones(n_points) * 4.2
+    ni_density[:crossing_idx] = 11.5  # Sheath is denser overall
     
     # Synthetic electric field
     E_field = np.column_stack([
@@ -171,8 +173,10 @@ def test_complete_workflow():
     print(f"\n5. Testing boundary detection...")
     
     try:
-        cfg = mms_mp.DetectorCfg(he_in=0.25, he_out=0.15, BN_tol=1.0)
-        layers = mms_mp.detect_crossings_multi(t, he_density, B_lmn[:, 2], cfg=cfg)
+        cfg = mms_mp.DetectorCfg(he_in=0.25, he_out=0.12, he_frac_in=0.08)
+        layers = mms_mp.detect_crossings_multi(
+            t, he_density, B_lmn[:, 2], ni=ni_density, cfg=cfg
+        )
         
         from mms_mp.boundary import extract_enter_exit
         crossings = extract_enter_exit(layers, t)

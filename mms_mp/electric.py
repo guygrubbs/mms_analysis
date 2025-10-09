@@ -9,9 +9,11 @@
 # ---------------------------------------------------------------------
 from __future__ import annotations
 
+from dataclasses import dataclass
+from typing import Literal, Optional, Tuple, Union
+
 import numpy as np
 import pandas as pd
-from typing import Tuple, Literal, Optional
 
 
 # Convenience unit converter expected by tests
@@ -64,11 +66,15 @@ KM_PER_M = 1.0e-3          # m → km
 # ------------------------------------------------------------------
 # Core: E×B in km s⁻¹
 # ------------------------------------------------------------------
-def exb_velocity(E_xyz: np.ndarray,
-                 B_xyz: np.ndarray,
-                 *,
-                 unit_E: Literal['V/m', 'mV/m'] = 'mV/m',
-                 unit_B: Literal['T', 'nT']     = 'nT') -> np.ndarray:
+def exb_velocity(
+    E_xyz: np.ndarray,
+    B_xyz: np.ndarray,
+    *,
+    unit_E: Literal['V/m', 'mV/m'] = 'mV/m',
+    unit_B: Literal['T', 'nT'] = 'nT',
+    min_b: Optional[float] = None,
+    return_quality: bool = False,
+) -> Union[np.ndarray, Tuple[np.ndarray, np.ndarray]]:
     """
     Calculate E×B drift velocity for charged particles in crossed electric and magnetic fields.
 
@@ -166,33 +172,51 @@ def exb_velocity(E_xyz: np.ndarray,
     """
     # --- unit conversions ------------------------------------------
     if unit_E == 'mV/m':
-        E = E_xyz * 1.0e-3          # → V/m
+        E = np.asarray(E_xyz, dtype=float) * 1.0e-3  # → V/m
     elif unit_E == 'V/m':
-        E = E_xyz
+        E = np.asarray(E_xyz, dtype=float)
     else:
         raise ValueError("unit_E must be 'V/m' or 'mV/m'")
 
     if unit_B == 'nT':
-        B = B_xyz * 1.0e-9          # → T
+        B = np.asarray(B_xyz, dtype=float) * 1.0e-9  # → T
+        min_b_T = None if min_b is None else float(min_b) * 1.0e-9
     elif unit_B == 'T':
-        B = B_xyz
+        B = np.asarray(B_xyz, dtype=float)
+        min_b_T = None if min_b is None else float(min_b)
     else:
         raise ValueError("unit_B must be 'T' or 'nT'")
 
-    # --- E × B -----------------------------------------------------
-    # Handle both 1D and 2D arrays
-    if E.ndim == 1 and B.ndim == 1:
-        # Single vector case
-        v_mps = np.cross(E, B) / np.sum(B**2)
-    else:
-        # Array case - ensure 2D
-        E = np.atleast_2d(E)
-        B = np.atleast_2d(B)
-        v_mps = np.cross(E, B) / np.sum(B**2, axis=1, keepdims=True)
-        if v_mps.shape[0] == 1:
-            v_mps = v_mps[0]  # Return 1D if input was 1D
+    # Normalize to 2-D arrays for vectorised handling
+    E = np.atleast_2d(E)
+    B = np.atleast_2d(B)
+    if E.shape != B.shape:
+        raise ValueError("E and B arrays must share the same shape")
 
-    return v_mps * KM_PER_M          # → km s⁻¹
+    quality = np.isfinite(E).all(axis=1) & np.isfinite(B).all(axis=1)
+
+    # Compute |B| and guard against unrealistically weak fields
+    B_mag = np.linalg.norm(B, axis=1)
+    if min_b_T is not None:
+        quality &= B_mag >= min_b_T
+
+    denom = B_mag**2
+    denom = np.where(denom == 0.0, np.nan, denom)
+
+    v_mps = np.full_like(E, np.nan, dtype=float)
+    valid_idx = np.where(quality)[0]
+    if valid_idx.size:
+        cross = np.cross(E[valid_idx], B[valid_idx])
+        v_mps[valid_idx] = cross / denom[valid_idx, None]
+
+    v_km_s = v_mps * KM_PER_M
+    if v_km_s.shape[0] == 1:
+        v_km_s = v_km_s[0]
+        quality = np.asarray(quality[0])
+
+    if return_quality:
+        return v_km_s, quality
+    return v_km_s
 
 
 # ------------------------------------------------------------------
@@ -250,40 +274,90 @@ def correct_E_for_scpot(E_raw: np.ndarray,
 # ------------------------------------------------------------------
 # Normal-velocity selector / blender
 # ------------------------------------------------------------------
-def normal_velocity(v_bulk_lmn: np.ndarray,
-                    v_exb_lmn : np.ndarray,
-                    *,
-                    strategy: Literal['prefer_exb',
-                                      'prefer_bulk',
-                                      'average'] = 'prefer_exb'
-                    ) -> np.ndarray:
+@dataclass
+class NormalVelocityBlendResult:
+    """Container describing the outcome of :func:`normal_velocity`."""
+
+    vn: np.ndarray
+    source: np.ndarray
+    exb_valid: np.ndarray
+    bulk_valid: np.ndarray
+
+
+def normal_velocity(
+    v_bulk_lmn: np.ndarray,
+    v_exb_lmn: np.ndarray,
+    *,
+    strategy: Literal['prefer_exb', 'prefer_bulk', 'average'] = 'prefer_exb',
+    exb_quality: Optional[np.ndarray] = None,
+    b_mag_nT: Optional[np.ndarray] = None,
+    min_b_nT: float = 0.5,
+    return_metadata: bool = False,
+) -> Union[np.ndarray, NormalVelocityBlendResult]:
     """
     Combine the L-M-N vectors and output **V_N** (1-D).
 
     • If one source is entirely NaN the other is used automatically.    ▲ CHG
       This prevents later crashes when optional data are absent.
     """
-    vN_b = np.atleast_1d(v_bulk_lmn[..., -1])
-    vN_e = np.atleast_1d(v_exb_lmn[...,  -1])
+    vN_b = np.atleast_1d(np.asarray(v_bulk_lmn)[..., -1])
+    vN_e = np.atleast_1d(np.asarray(v_exb_lmn)[..., -1])
 
-    # ensure shapes match
     if vN_b.size == 0 and vN_e.size:
         vN_b = np.full_like(vN_e, np.nan)
     if vN_e.size == 0 and vN_b.size:
         vN_e = np.full_like(vN_b, np.nan)
 
-    # ▲ CHG — automatic fallback if chosen source is all-NaN
+    bulk_valid = np.isfinite(vN_b)
+
+    if exb_quality is None:
+        exb_valid = np.isfinite(vN_e)
+    else:
+        exb_valid = np.asarray(exb_quality, dtype=bool)
+        if exb_valid.shape != vN_e.shape:
+            exb_valid = np.broadcast_to(exb_valid, vN_e.shape)
+
+    if b_mag_nT is not None:
+        b_arr = np.asarray(b_mag_nT, dtype=float)
+        if b_arr.shape != vN_e.shape:
+            b_arr = np.broadcast_to(b_arr, vN_e.shape)
+        exb_valid &= np.isfinite(b_arr) & (b_arr >= float(min_b_nT))
+
+    out = np.full_like(vN_b, np.nan, dtype=float)
+    source = np.full(vN_b.shape, 'none', dtype=object)
+
     if strategy == 'average':
-        out = np.nanmean(np.stack([vN_b, vN_e]), axis=0)
+        weights = np.stack([bulk_valid.astype(float), exb_valid.astype(float)])
+        values = np.stack([vN_b, vN_e])
+        weight_sum = weights.sum(axis=0)
+        with np.errstate(invalid='ignore', divide='ignore'):
+            avg = np.nansum(values * weights, axis=0) / weight_sum
+        out = np.where(weight_sum > 0, avg, np.nan)
+        both_valid = bulk_valid & exb_valid
+        source[both_valid] = 'average'
+        source[~both_valid & exb_valid] = 'exb'
+        source[~both_valid & bulk_valid] = 'bulk'
     elif strategy == 'prefer_exb':
-        out = np.where(np.isfinite(vN_e), vN_e, vN_b)
+        use_exb = exb_valid
+        out[use_exb] = vN_e[use_exb]
+        source[use_exb] = 'exb'
+        fallback = ~use_exb & bulk_valid
+        out[fallback] = vN_b[fallback]
+        source[fallback] = 'bulk'
     elif strategy == 'prefer_bulk':
-        out = np.where(np.isfinite(vN_b), vN_b, vN_e)
+        use_bulk = bulk_valid
+        out[use_bulk] = vN_b[use_bulk]
+        source[use_bulk] = 'bulk'
+        fallback = ~use_bulk & exb_valid
+        out[fallback] = vN_e[fallback]
+        source[fallback] = 'exb'
     else:
         raise ValueError(f'unknown strategy {strategy}')
 
-    # if both arrays were completely NaN, fall back to bulk
-    if not np.isfinite(out).any():
-        out = vN_b
+    if not np.isfinite(out).any() and bulk_valid.any():
+        out = np.where(bulk_valid, vN_b, out)
+        source = np.where(bulk_valid, 'bulk', source)
 
+    if return_metadata:
+        return NormalVelocityBlendResult(out, source, exb_valid, bulk_valid)
     return out

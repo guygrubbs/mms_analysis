@@ -126,12 +126,12 @@ For a concise summary of units, coordinate frames, right‑hand rules, and I/O e
 | Module            | Highlight                                                                                  |
 | ----------------- | ------------------------------------------------------------------------------------------ |
 | `data_loader`     | 1-call loader for FGM, FPI, HPCA, EDP, ephemeris + pandas/NumPy friendly output            |
-| `coords`          | `hybrid_lmn()` → returns MVA result if eigen-ratios ≥ 2 (default), else Shue (1997) model normal |
-| `boundary`        | State-machine uses He⁺ density **and** $B_N$ rotation; hysteresis thresholds avoid noise   |
+| `coords`          | `hybrid_lmn()` enforces formation-aware eigen-ratio thresholds (auto ≥2) and records the fallback method (MVA / pySPEDAS / Shue) |
+| `boundary`        | Logistic fusion of He⁺ fraction, total density contrast, and $B_N$ rotation with hysteresis |
 | `electric`        | `exb_velocity_sync()` merges E & B to compute drift; `normal_velocity()` blends ExB + bulk |
 | `motion`          | `integrate_disp()` supports trapezoid / Simpson; propagates 1-σ if velocity error supplied |
 | `multispacecraft` | SVD timing solver (2–4 SC) returns n̂, Vₚₕ ±σ; `stack_aligned()` builds overlay arrays     |
-| `visualize`       | `summary_single()` (4-panel quick-look), `overlay_multi()`, `plot_displacement()`          |
+| `visualize`       | `summary_single()` (5-panel quick-look with dynamic pressure & charge balance), `overlay_multi()`, `plot_displacement()` |
 | `spectra`         | `fpi_ion_spectrogram()`, `fpi_electron_spectrogram()` for energy flux visualization        |
 | `thickness`       | `layer_thicknesses()` calculates magnetopause layer thickness from displacement data       |
 | `cli`             | Downloads, analyses, saves JSON + CSV + figures; ideal for batch runs / cron jobs          |
@@ -169,8 +169,9 @@ python examples/2019_01_27_1200_visualization.py --center 2019-01-27T12:00:00 --
 # A template is provided at examples/overlay_published_template.json
 python examples/2019_01_27_1200_visualization.py --overlay-json examples/overlay_published_template.json
 
-# Each per‑probe run saves PNG, CSV, and an HTML viewer to results/visualizations
-# Open the HTML in a browser to inspect images and metadata side‑by‑side.
+# Each per‑probe run saves PNG, CSV, and an HTML viewer to results/visualizations.
+# The repository ships this directory empty; regenerate figures so every artifact
+# reflects the current physics pipeline.
 ```
 
 **Output files generated:**

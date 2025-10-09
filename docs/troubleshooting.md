@@ -35,7 +35,10 @@ pip install --no-cache-dir mms-magnetopause
 
 **Cause:** MMS4 DES data not available at requested cadence/time
 
-**Solution:** Toolkit automatically falls back to survey mode, then fills with NaN
+**Solution:** The loader now retries with survey/QL products and, if necessary,
+averages the remaining spacecraft to reconstruct MMS4. If the message persists
+after rerunning with `include_srvy=True`, verify CDAWeb availability; the loader
+will raise an explicit `RuntimeError` instead of inserting NaNs.
 
 ### CDAWeb Connection Timeout
 **Problem:** Downloads fail with timeout errors
@@ -64,22 +67,23 @@ rm -rf ~/.pyspedas
 **Problem:** `detect_crossings_multi()` returns empty list
 
 **Possible Causes:**
-1. Thresholds too strict for event
-2. Poor data quality
-3. Wrong time interval
+1. He⁺ or total density thresholds too strict for the event
+2. Poor data quality or large gaps after reconstruction
+3. Wrong time interval (crossing outside requested window)
 
 **Solutions:**
 ```python
 # Adjust detection thresholds
 cfg = mp.boundary.DetectorCfg(
-    he_in=0.1,     # Increase from default 0.05
-    he_out=0.02,   # Increase from default 0.01
-    BN_tol=1.0     # Decrease from default 2.0
+    he_in=0.2,
+    he_out=0.08,
+    he_frac_in=0.06,
+    BN_tol=2.0,
 )
 
-# Check data quality
-good_fraction = np.mean(good_mask)
-print(f"Good data fraction: {good_fraction:.2f}")
+# Check data quality across both He⁺ and total density masks
+good_fraction = np.mean(good_he_mask & good_ni_mask)
+print(f"Good data fraction (He & Ni): {good_fraction:.2f}")
 
 # Visualize raw data
 mp.visualize.summary_single(t, B_lmn, Ni, Ne, He, vN_i, vN_e, vN_he)
@@ -120,7 +124,13 @@ for start, end in time_chunks:
     result = analyze_interval([start, end])
 
 # Use survey mode instead of burst
-data = mp.data_loader.load_event(trange, cadence='srvy')
+data = mp.data_loader.load_event(
+    trange,
+    data_rate_fgm='srvy',
+    data_rate_fpi='srvy',
+    data_rate_hpca='srvy',
+    include_srvy=True,
+)
 ```
 
 ## Visualization Issues
@@ -168,7 +178,13 @@ data = mp.data_loader.load_event(trange, probes=['1', '2'])
 data = mp.data_loader.load_event(trange, include_hpca=False, include_edp=False)
 
 # Use survey mode for quick analysis
-data = mp.data_loader.load_event(trange, cadence='srvy')
+data = mp.data_loader.load_event(
+    trange,
+    data_rate_fgm='srvy',
+    data_rate_fpi='srvy',
+    data_rate_hpca='srvy',
+    include_srvy=True,
+)
 ```
 
 ### Slow Resampling

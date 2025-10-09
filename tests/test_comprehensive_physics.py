@@ -123,16 +123,23 @@ class TestCoordinateSystemPhysics:
         
         # Test hybrid LMN
         lmn_system = coords.hybrid_lmn(B_field, pos_gsm_km=pos_gsm * 6371)
-        
+
         # Verify it's a valid LMN system
         assert hasattr(lmn_system, 'L'), "Missing L vector"
         assert hasattr(lmn_system, 'M'), "Missing M vector"
         assert hasattr(lmn_system, 'N'), "Missing N vector"
-        
+
         # Check orthogonality
         assert abs(np.dot(lmn_system.L, lmn_system.M)) < 1e-10
         assert abs(np.dot(lmn_system.L, lmn_system.N)) < 1e-10
         assert abs(np.dot(lmn_system.M, lmn_system.N)) < 1e-10
+
+        # Method bookkeeping and metadata
+        assert lmn_system.method in {'mva', 'pyspedas', 'shue'}
+        assert lmn_system.meta is not None
+        assert lmn_system.meta.get('formation_type') == 'auto'
+        ratios = lmn_system.meta.get('eig_ratio_thresholds')
+        assert ratios is not None and {'lambda_max_mid', 'lambda_mid_min'} <= set(ratios.keys())
 
 
 class TestBoundaryDetectionLogic:
@@ -145,30 +152,30 @@ class TestBoundaryDetectionLogic:
         assert cfg.he_in == 0.3
         assert cfg.he_out == 0.1
         assert cfg.min_pts == 5
-        
+
         # Invalid parameter should raise error
-        with pytest.raises(ValueError, match="Unknown DetectorCfg key"):
+        with pytest.raises(TypeError):
             boundary.DetectorCfg(invalid_param=123)
     
     def test_boundary_state_transitions(self):
         """Test state machine transitions for boundary detection"""
-        cfg = boundary.DetectorCfg(he_in=0.2, he_out=0.1, BN_tol=2.0)
+        cfg = boundary.DetectorCfg(he_in=0.2, he_out=0.1, he_frac_in=0.06)
         
         # Test transition from sheath to magnetosphere
         # High He+ density should indicate magnetosphere
-        new_state = boundary._sm_update('sheath', he_val=0.5, BN_val=5.0, 
+        new_state = boundary._sm_update('sheath', he_val=0.5, BN_val=5.0,
                                        cfg=cfg, inside_mag=True)
         assert new_state == 'magnetosphere', "Should transition to magnetosphere with high He+"
         
         # Test transition to current sheet layer
         # Low |BN| should indicate mp_layer
-        new_state = boundary._sm_update('sheath', he_val=0.15, BN_val=1.0, 
+        new_state = boundary._sm_update('sheath', he_val=0.15, BN_val=1.0,
                                        cfg=cfg, inside_mag=False)
         assert new_state == 'mp_layer', "Should transition to mp_layer with low |BN|"
         
         # Test staying in sheath
         # Low He+ density should keep in sheath
-        new_state = boundary._sm_update('sheath', he_val=0.05, BN_val=5.0, 
+        new_state = boundary._sm_update('sheath', he_val=0.05, BN_val=5.0,
                                        cfg=cfg, inside_mag=False)
         assert new_state == 'sheath', "Should stay in sheath with low He+"
     

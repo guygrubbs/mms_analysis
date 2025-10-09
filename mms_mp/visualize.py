@@ -119,12 +119,57 @@ def summary_single(t       : np.ndarray,
 
     # -------- Shade layers (top 3 panels) ----------------------------
     if layers:
-        for a in ax[:3]:
+        for a in ax[:4]:
             shade_layers(a, layers, t)
 
-    # -------- Panels 3 & 4 : placeholders ----------------------------
-    ax[3].axis('off')
-    ax[4].axis('off')
+    # -------- Panel 3 : |B| and dynamic pressure --------------------
+    B_mag = np.linalg.norm(B_lmn[:, :3], axis=1)
+    _safe_plot(ax[3], t, B_mag, label='|B|')
+    ax[3].set_ylabel('|B| (nT)')
+
+    dyn_ax = ax[3].twinx()
+    mp_kg = 1.67262192369e-27
+    cm3_to_m3 = 1e6
+    km_to_m = 1e3
+
+    def _dyn_pressure(density_cm3: np.ndarray, velocity_kms: np.ndarray, mass_factor: float = 1.0) -> np.ndarray:
+        density_si = np.asarray(density_cm3) * cm3_to_m3 * mp_kg * mass_factor
+        velocity_si = np.asarray(velocity_kms) * km_to_m
+        return density_si * (velocity_si ** 2) * 1e9
+
+    ion_pdyn = _dyn_pressure(N_i, vN_i)
+    dyn_ax.plot(t, ion_pdyn, color='#d62728', label='P$_{dyn}$ ions')
+    if np.isfinite(N_he).any() and np.isfinite(vN_he).any():
+        he_pdyn = _dyn_pressure(N_he, vN_he, mass_factor=4.0)
+        dyn_ax.plot(t, he_pdyn, color='#ff7f0e', linestyle='--', label='P$_{dyn}$ He$^+$')
+    dyn_ax.set_ylabel('Dynamic Pressure (nPa)')
+    ax[3]._dynamic_axis = dyn_ax
+
+    handles, labels = ax[3].get_legend_handles_labels()
+    handles2, labels2 = dyn_ax.get_legend_handles_labels()
+    if handles or handles2:
+        dyn_ax.legend(handles + handles2, labels + labels2, loc='upper right')
+
+    # -------- Panel 4 : charge balance & He fraction -----------------
+    delta_n = np.asarray(N_e) - np.asarray(N_i)
+    _safe_plot(ax[4], t, delta_n, label='ΔN (e⁻ − ions)')
+    if np.isfinite(delta_n).any():
+        ax[4].axhline(0.0, color='k', linestyle=':', linewidth=0.8)
+    ax[4].set_ylabel('ΔN (cm$^{-3}$)')
+
+    he_frac = np.full_like(np.asarray(N_he, dtype=float), np.nan)
+    denom = np.asarray(N_i, dtype=float)
+    mask = np.isfinite(denom) & (np.abs(denom) > 0)
+    he_frac[mask] = np.asarray(N_he, dtype=float)[mask] / denom[mask]
+    frac_ax = ax[4].twinx()
+    frac_ax.plot(t, he_frac, color='#9467bd', label='He$^+$/N$_i$')
+    frac_ax.set_ylabel('He$^+$ Fraction')
+    ax[4]._he_fraction_axis = frac_ax
+
+    handles4, labels4 = ax[4].get_legend_handles_labels()
+    handles4b, labels4b = frac_ax.get_legend_handles_labels()
+    if handles4 or handles4b:
+        frac_ax.legend(handles4 + handles4b, labels4 + labels4b, loc='upper right')
 
     # -------- Shared x-axis formatting -------------------------------
     ax[-1].set_xlabel('UTC')
@@ -155,9 +200,48 @@ def overlay_multi(overlay_dict: Dict[str, Dict[str, np.ndarray]],
     overlay_dict[var][probe] == 2-col array [[Δt, value], ...]
     produced by e.g. stack_aligned().
     """
+    if var not in overlay_dict:
+        raise KeyError(f'missing overlay variable: {var}')
+
+    data_block = overlay_dict[var]
+    if ref_probe not in data_block:
+        raise KeyError(f'reference probe {ref_probe} missing from overlays for {var}')
+
     if ax is None:
         fig, ax = plt.subplots(1, 1, figsize=(7, 3))
-    col_cycle = ax._get_lines.prop_cycler
+
+    plotted: bool = False
+    for probe in probes:
+        series = data_block.get(probe)
+        if series is None:
+            continue
+        arr = np.asarray(series)
+        if arr.ndim != 2 or arr.shape[1] != 2:
+            raise ValueError(f'overlay array for probe {probe} must be (N, 2) [Δt, value]')
+        if not np.isfinite(arr[:, 1]).any():
+            continue
+
+        label = f'MMS{probe}' if probe != ref_probe else f'MMS{probe} (ref)'
+        lw = 2.5 if probe == ref_probe else 1.3
+        ax.plot(arr[:, 0], arr[:, 1], label=label, lw=lw)
+        plotted = True
+
+    if not plotted:
+        raise ValueError(f'no finite data available for {var}')
+
+    ax.axvline(0.0, color='k', lw=0.8, linestyle=':')
+    ax.set_xlabel(f'Δt relative to MMS{ref_probe} (s)')
+    if ylabel:
+        ax.set_ylabel(ylabel)
+    if title:
+        ax.set_title(title)
+    ax.legend(loc='upper right')
+
+    if show:
+        plt.tight_layout()
+        plt.show()
+
+    return ax
 
 # ---------------------------------------------------------------------
 # Additional plotting helpers expected by tests
@@ -186,7 +270,11 @@ def plot_magnetic_field(axes: Iterable[plt.Axes],
     for i in range(3):
         _safe_plot(axes[i], t, B_xyz[:, i], label=labels[i], color=colors[i])
         axes[i].legend(loc='upper right')
-    axes[-1].set_xlabel('Time (s)')
+    if np.issubdtype(np.asarray(t).dtype, np.datetime64):
+        axes[-1].set_xlabel('Time (UTC)')
+        axes[-1].xaxis.set_major_formatter(mdates.DateFormatter('%H:%M:%S'))
+    else:
+        axes[-1].set_xlabel('Time (s)')
 
 
 def plot_boundary_structure(axes: Iterable[plt.Axes],

@@ -50,7 +50,7 @@ class EphemerisManager:
             Event data dictionary from mms_mp.data_loader.load_event()
         """
         self.event_data = event_data
-        self.probes = list(event_data.keys())
+        self.probes = [p for p in event_data.keys() if isinstance(p, str) and not p.startswith('__')]
         self._validate_mec_data()
     
     def _validate_mec_data(self):
