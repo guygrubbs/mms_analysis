@@ -18,10 +18,35 @@ import faulthandler
 from datetime import datetime
 
 
+def _option_is_registered(parser, option):
+    """Return True when an option string is already known to pytest's parser."""
+
+    option_parser = parser._getparser()
+    option_actions = getattr(option_parser, "_option_string_actions", {})
+    return option in option_actions
+
+
 def pytest_addoption(parser):
-    """Provide stub timeout options when pytest-timeout is unavailable."""
-    parser.addoption('--timeout', action='store', default=None, help='stub timeout (seconds)')
-    parser.addoption('--timeout-method', action='store', default='thread', help='stub timeout method')
+    """Provide stub timeout options only when pytest-timeout hasn't already added them."""
+
+    # ``pytest-timeout`` registers ``--timeout``/``--timeout-method`` during option parsing.
+    # In CI this plugin is available, so we skip our local stubs when those option strings
+    # already exist to avoid argparse conflicts while still supporting local setups where the
+    # plugin isn't installed.
+    if _option_is_registered(parser, "--timeout") or _option_is_registered(
+        parser, "--timeout-method"
+    ):
+        return
+
+    parser.addoption(
+        "--timeout", action="store", default=None, help="stub timeout (seconds)"
+    )
+    parser.addoption(
+        "--timeout-method",
+        action="store",
+        default="thread",
+        help="stub timeout method",
+    )
 
 # Auto-close figures after each test to prevent resource buildup
 @pytest.fixture(autouse=True)
