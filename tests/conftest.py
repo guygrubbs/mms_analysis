@@ -19,9 +19,25 @@ from datetime import datetime
 
 
 def pytest_addoption(parser):
-    """Provide stub timeout options when pytest-timeout is unavailable."""
-    parser.addoption('--timeout', action='store', default=None, help='stub timeout (seconds)')
-    parser.addoption('--timeout-method', action='store', default='thread', help='stub timeout method')
+    """Provide stub timeout options only when pytest-timeout isn't installed."""
+
+    # pytest-timeout registers these CLI options globally. In environments where the
+    # plugin is available (such as CI), attempting to add them again causes
+    # argparse to raise a conflict error before the tests even start. Guard the
+    # additions so we only provide the stub options when the plugin is missing.
+    option_actions = getattr(parser, "_option_string_actions", {})
+
+    if "--timeout" not in option_actions:
+        parser.addoption(
+            "--timeout", action="store", default=None, help="stub timeout (seconds)"
+        )
+    if "--timeout-method" not in option_actions:
+        parser.addoption(
+            "--timeout-method",
+            action="store",
+            default="thread",
+            help="stub timeout method",
+        )
 
 # Auto-close figures after each test to prevent resource buildup
 @pytest.fixture(autouse=True)
