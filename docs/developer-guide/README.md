@@ -109,14 +109,15 @@ def plot_custom(data, **kwargs):
 # tests/test_boundary.py
 def test_detect_crossings_basic():
     """Test basic boundary detection."""
-    t = np.arange(100)
-    he = np.ones(100)
-    he[40:60] = 0.1  # Boundary region
-    BN = np.ones(100)
-    
-    layers = detect_crossings_multi(t, he, BN)
-    assert len(layers) == 1
-    assert layers[0][0] == 'magnetopause'
+    t = np.arange(100, dtype=float)
+    he = np.ones(100) * 0.3
+    he[:60] = 0.05  # Magnetosheath
+    BN = np.concatenate([np.full(60, -8.0), np.linspace(-2.0, 2.0, 20), np.full(20, 4.0)])
+    ni = np.concatenate([np.full(60, 10.0), np.linspace(8.0, 5.0, 20), np.full(20, 4.0)])
+
+    layers = detect_crossings_multi(t, he, BN, ni=ni)
+    assert len(layers) == 3
+    assert layers[0][0] == 'sheath'
 ```
 
 ### Integration Tests

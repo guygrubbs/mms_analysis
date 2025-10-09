@@ -83,12 +83,16 @@ def main():
             BN = B_lmn[:, 2]  # Normal component
             
             # Boundary detection
-            cfg = mms_mp.DetectorCfg(he_in=0.25, he_out=0.15, BN_tol=1.0)
-            mask_all = good['He'] & good['B']
-            
+            cfg = mms_mp.DetectorCfg(he_in=0.25, he_out=0.15, he_frac_in=0.08)
+            mask_all = good['He'] & good['Ni'] & good['B']
+
             layers = mms_mp.detect_crossings_multi(
-                t_grid, vars_grid['He'], BN,
-                cfg=cfg, good_mask=mask_all
+                t_grid,
+                vars_grid['He'],
+                BN,
+                ni=vars_grid['Ni'],
+                cfg=cfg,
+                good_mask=mask_all,
             )
             
             # Extract crossing times

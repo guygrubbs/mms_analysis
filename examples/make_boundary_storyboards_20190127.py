@@ -98,17 +98,25 @@ def _compute_crossings(BN_map, evt, cadence='1s'):
         key = str(p)
         if key not in BN_map: continue
         BN = BN_map[key]['BN']
-        # Use FPI total ion density as proxy for He+ if available
-        he = None
+        he = pd.Series(np.nan, index=BN.index)
+        ni = pd.Series(np.nan, index=BN.index)
+        if 'N_he' in evt[key] and evt[key]['N_he'][0] is not None:
+            t_he, he_vals = evt[key]['N_he']
+            he_df = mp.data_loader.to_dataframe(t_he, he_vals, cols=['He'])
+            he_df = mp.data_loader.resample(he_df, cadence)
+            he = _series(he_df, 'He').reindex(BN.index, method='nearest')
         if 'N_tot' in evt[key] and evt[key]['N_tot'][0] is not None:
-            tN, N = evt[key]['N_tot']
-            N_df = mp.data_loader.to_dataframe(tN, N, cols=['N'])
-            N_df = mp.data_loader.resample(N_df, cadence)
-            he = _series(N_df, 'N').reindex(BN.index, method='nearest')
-        else:
-            he = pd.Series(np.nan, index=BN.index)
-        # Call detector
-        layers = detect_crossings_multi(BN.index.values, he.values, BN.values)
+            t_ni, ni_vals = evt[key]['N_tot']
+            ni_df = mp.data_loader.to_dataframe(t_ni, ni_vals, cols=['Ni'])
+            ni_df = mp.data_loader.resample(ni_df, cadence)
+            ni = _series(ni_df, 'Ni').reindex(BN.index, method='nearest')
+        # Call detector with both He⁺ and total ion density
+        layers = detect_crossings_multi(
+            BN.index.values,
+            he.values,
+            BN.values,
+            ni=ni.values,
+        )
         crossings[key] = {'layers': layers}
     return crossings
 

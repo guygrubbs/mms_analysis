@@ -41,8 +41,9 @@ def timing_normal(pos_gsm: Dict[str, np.ndarray],
                   t_cross: Dict[str, float],
                   *,
                   normalise: bool = True,
-                  min_sc: int = 2
-                  ) -> Tuple[np.ndarray, float, float]:
+                  min_sc: int = 2,
+                  return_diagnostics: bool = False
+                  ) -> Tuple[np.ndarray, float, float] | Tuple[np.ndarray, float, float, Dict[str, object]]:
     """
     Determine boundary normal vector and phase velocity using multi-spacecraft timing analysis.
 
@@ -75,8 +76,14 @@ def timing_normal(pos_gsm: Dict[str, np.ndarray],
             Default: 2. Must be ≥ 2. More spacecraft provide better constraints
             and uncertainty estimates.
 
+        return_diagnostics: If True, append a diagnostics dictionary to the
+            return tuple summarising singular values, residuals, and geometry
+            health metrics.  Defaults to False for backwards compatibility.
+
     Returns:
-        tuple: A 3-element tuple containing:
+        tuple: A 3-element tuple containing (n_hat, V_phase, sigma_V) or,
+        when ``return_diagnostics`` is True, a 4-element tuple where the final
+        entry is a diagnostics dictionary.
 
         n_hat (np.ndarray): Boundary normal vector, shape (3,).
             If normalise=True: Unit vector pointing in boundary normal direction
@@ -172,13 +179,23 @@ def timing_normal(pos_gsm: Dict[str, np.ndarray],
     # Guard against degenerate identical times: if all dt ~ 0, return NaNs early
     if np.allclose(M[:, -1], 0.0):
         warnings.warn("Timing analysis degenerate: zero time differences")
-        # Fallback: choose axis of maximum spatial spread among x,y,z
         pts = np.vstack([pos_gsm[p] for p in probes])
         ranges = pts.max(axis=0) - pts.min(axis=0)
         axis = int(np.argmax(ranges))  # 0=x,1=y,2=z
         n_hat = np.zeros(3)
         n_hat[axis] = 1.0
-        return n_hat, np.nan, np.nan
+        diag = {
+            'condition_number': float('inf'),
+            'singular_values': [],
+            'residual_norm': float('nan'),
+            'rank': 0,
+            'points_used': len(probes),
+            'sigma_ratio': float('nan'),
+            'degenerate': True,
+        }
+        if return_diagnostics:
+            return n_hat, float('nan'), float('nan'), diag
+        return n_hat, float('nan'), float('nan')
     U, S, VT = np.linalg.svd(M)
     x = VT[-1]                        # (4,)
     n = x[:3]
@@ -187,7 +204,18 @@ def timing_normal(pos_gsm: Dict[str, np.ndarray],
         n_norm = np.linalg.norm(n)
         if n_norm == 0 or (len(S) and S[-1] < 1e-12):
             warnings.warn("Timing analysis degenerate: insufficient timing differences")
-            return np.full(3, np.nan), np.nan, np.nan
+            diag = {
+                'condition_number': float('inf'),
+                'singular_values': S.tolist(),
+                'residual_norm': float('nan'),
+                'rank': int(np.linalg.matrix_rank(M)),
+                'points_used': len(probes),
+                'sigma_ratio': float('nan'),
+                'degenerate': True,
+            }
+            if return_diagnostics:
+                return np.full(3, np.nan), float('nan'), float('nan'), diag
+            return np.full(3, np.nan), float('nan'), float('nan')
         n_hat = n / n_norm
         V = V / n_norm  # Scale velocity consistently
     else:
@@ -196,14 +224,33 @@ def timing_normal(pos_gsm: Dict[str, np.ndarray],
     # Uncertainty:  1/√λ for smallest singular value ≈ σ of x
     # Estimate σ_V via linear propagation (approx)
     if len(S) >= 2:
-        # smallest singular value
         sigma = S[-1]
-        # relative error in x components ~ σ / largest_singular_value
         rel = sigma / S[0] if S[0] > 0 else np.inf
         sigma_V = abs(V) * rel
     else:
         sigma_V = np.nan
 
+    diagnostics = None
+    if return_diagnostics:
+        residual = M @ x
+        cond = float(np.inf)
+        if len(S) and S[-1] > 0:
+            cond = float(S[0] / S[-1])
+        sigma_ratio = float(np.nan)
+        if len(S) > 1 and S[-2] > 0:
+            sigma_ratio = float(S[-1] / S[-2])
+        diagnostics = {
+            'condition_number': cond,
+            'singular_values': S.tolist(),
+            'residual_norm': float(np.linalg.norm(residual)),
+            'rank': int(np.linalg.matrix_rank(M)),
+            'points_used': len(probes),
+            'sigma_ratio': sigma_ratio,
+            'degenerate': bool(cond > 1e6 or rel > 0.6),
+        }
+
+    if return_diagnostics:
+        return n_hat, V, sigma_V, diagnostics  # type: ignore[return-value]
     return n_hat, V, sigma_V
 
 # ------------------------------------------------------------

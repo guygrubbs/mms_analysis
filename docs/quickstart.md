@@ -36,22 +36,33 @@ import mms_mp as mp
 trange = ['2019-11-12T04:00', '2019-11-12T05:00']
 data = mp.data_loader.load_event(trange, probes=['2'])
 
+# Inspect provenance metadata (optional)
+meta = data['__meta__']
+print('Warnings:', meta['warnings'])
+
 # Get MMS2 data
 d = data['2']
 
 # Resample to common time grid
 t, vars_grid, good = mp.resample.merge_vars({
+    'He': (d['N_he'][0], d['N_he'][1]),
     'Ni': (d['N_tot'][0], d['N_tot'][1]),
     'B': (d['B_gsm'][0], d['B_gsm'][1])
 }, cadence='150ms')
 
 # Transform to boundary coordinates
-lmn = mp.coords.hybrid_lmn(d['B_gsm'][1])
+lmn = mp.coords.hybrid_lmn(d['B_gsm'][1], formation_type='planar')
+B_thresh = lmn.meta['eig_ratio_thresholds']
+print('LMN method:', lmn.method, 'thresholds:', B_thresh)
 B_lmn = lmn.to_lmn(vars_grid['B'])
 
-# Detect boundary crossings
+# Detect boundary crossings with He⁺ + total density + Bₙ
 layers = mp.boundary.detect_crossings_multi(
-    t, vars_grid['Ni'], B_lmn[:, 2], good_mask=good['Ni']
+    t,
+    vars_grid['He'],
+    B_lmn[:, 2],
+    ni=vars_grid['Ni'],
+    good_mask=good['He'] & good['Ni'],
 )
 
 print(f"Found {len(layers)} boundary layers")

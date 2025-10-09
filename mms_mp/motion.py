@@ -30,6 +30,9 @@ class DispResult:
     disp_km: np.ndarray        # displacement (km)
     sigma_km: Optional[np.ndarray] = None   # 1-σ uncertainty (km) if provided
     scheme: str = 'trap'
+    n_gaps_filled: int = 0     # count of single-sample gaps interpolated
+    segment_count: int = 0     # number of contiguous integration segments
+    max_step_s: Optional[float] = None  # adaptive sub-step control (if used)
 
 
 # Additional helpers expected by tests
@@ -129,7 +132,8 @@ def integrate_disp(t: np.ndarray,
                    sigma_v: Optional[np.ndarray] = None,
                    good_mask: Optional[np.ndarray] = None,
                    scheme: Literal['trap', 'simpson', 'rect'] = 'trap',
-                   fill_gaps: bool = True) -> DispResult:
+                   fill_gaps: bool = True,
+                   max_step_s: Optional[float] = None) -> DispResult:
     """
     Integrate normal velocity to calculate boundary layer displacement.
 
@@ -173,6 +177,12 @@ def integrate_disp(t: np.ndarray,
             Default: True. Helps maintain continuity across brief data gaps.
             Only fills gaps of exactly 1 sample to avoid over-interpolation.
 
+        max_step_s: Maximum integration step in seconds.  When provided, the
+            routine linearly densifies intervals with Δt > max_step_s before
+            performing the numerical integration.  This guards against sparse
+            cadences that would otherwise underestimate displacement and ensures
+            convergence when mixing survey and burst samples.
+
     Returns:
         DispResult: Dataclass containing integration results with fields:
 
@@ -190,6 +200,11 @@ def integrate_disp(t: np.ndarray,
         method (str): Integration method used ('trap', 'simpson', or 'rect').
 
         n_gaps_filled (int): Number of single-sample gaps that were interpolated.
+
+        segment_count (int): Number of contiguous, finite-data segments that
+            were integrated independently.
+
+        max_step_s (float | None): Adaptive sub-step threshold actually applied.
 
     Raises:
         ValueError: If input arrays have mismatched shapes or if time array
@@ -250,65 +265,143 @@ def integrate_disp(t: np.ndarray,
         - Sonnerup et al. (2006): Minimum and Maximum Variance Analysis
         - Press et al. (2007): Numerical Recipes - Integration of Functions
     """
+    t = np.asarray(t)
+    vN = np.asarray(vN, dtype=float)
+    if vN.shape != t.shape:
+        raise ValueError("t and vN must have identical shapes")
+
     if good_mask is None:
         good_mask = np.ones_like(vN, dtype=bool)
+    else:
+        good_mask = np.asarray(good_mask, dtype=bool)
+        if good_mask.shape != vN.shape:
+            raise ValueError("good_mask must match vN shape")
 
-    # Convert times → seconds
     if np.issubdtype(t.dtype, np.datetime64):
         t_sec = (t - t[0]) / np.timedelta64(1, 's')
         t_sec = t_sec.astype(np.float64)
     else:
-        t_sec = t - t[0]
+        t_sec = t.astype(float)
+        t_sec = t_sec - t_sec[0]
 
-    # Make copy for fill
+    if np.any(np.diff(t_sec) < 0):
+        raise ValueError("time array must be monotonically increasing")
+
     v_clean = vN.copy()
+    bad = (~good_mask) | (~np.isfinite(v_clean))
+    v_clean[bad] = np.nan
+    n_filled = 0
     if fill_gaps:
-        # detect isolated NaNs/bad and linearly interp
-        bad = ~good_mask | ~np.isfinite(v_clean)
-        v_clean[bad] = np.nan
-        v_clean = _lin_fill(v_clean)
+        v_clean, n_filled = _lin_fill(v_clean)
 
-    # Segment integration: break where NaNs remain
-    disp = np.zeros_like(v_clean)
+    disp = np.zeros_like(v_clean, dtype=float)
+    sig_arr = None
     if sigma_v is not None:
-        sigma_v = np.asarray(sigma_v)
-        sig_arr = np.zeros_like(v_clean)
+        sigma_v = np.asarray(sigma_v, dtype=float)
+        if sigma_v.shape != v_clean.shape:
+            raise ValueError("sigma_v must match vN shape")
+        sigma_v = sigma_v.copy()
+        sigma_v[~np.isfinite(sigma_v)] = 0.0
+        sig_arr = np.zeros_like(v_clean, dtype=float)
 
     idx = 0
+    seg_count = 0
+    disp_offset = 0.0
+    variance_offset = 0.0
+
     while idx < len(v_clean):
         if not np.isfinite(v_clean[idx]):
             idx += 1
             continue
-        # find next NaN/bad break
         jdx = idx
         while jdx < len(v_clean) and np.isfinite(v_clean[jdx]):
             jdx += 1
+
         seg = slice(idx, jdx)
-        disp_seg = _segment_integral(t_sec[seg], v_clean[seg], scheme)
-        disp[seg] = disp[seg.start-1] if seg.start > 0 else 0.0
-        disp[seg] += disp_seg
-        if sigma_v is not None:
-            # propagate: σ_disp = sqrt( Σ (dt * σ_v)^2 )
-            dt = np.diff(t_sec[seg], prepend=t_sec[seg][0])
-            sig_seg = np.sqrt(np.cumsum((dt * sigma_v[seg])**2))
-            sig_arr[seg] = sig_arr[seg.start-1] if seg.start > 0 else 0.0
-            sig_arr[seg] += sig_seg
+        t_seg = t_sec[seg]
+        v_seg = v_clean[seg]
+        sig_seg = sigma_v[seg] if sigma_v is not None else None
+
+        t_dense, v_dense, sig_dense = _densify_segment(t_seg, v_seg, max_step_s, sig_seg)
+        disp_dense = _segment_integral(t_dense, v_dense, scheme)
+
+        disp_interp = np.interp(t_seg, t_dense, disp_dense)
+        disp[seg] = disp_offset + disp_interp
+        disp_offset = disp[seg][-1]
+
+        if sig_arr is not None:
+            dt_dense = np.diff(t_dense, prepend=t_dense[0])
+            var_dense = np.cumsum((dt_dense * sig_dense) ** 2)
+            var_interp = np.interp(t_seg, t_dense, var_dense)
+            total_var = variance_offset + var_interp
+            sig_arr[seg] = np.sqrt(total_var)
+            variance_offset = total_var[-1]
+
+        seg_count += 1
         idx = jdx
 
-    return DispResult(t_sec, disp, sig_arr if sigma_v is not None else None, scheme)
+    return DispResult(t_sec, disp, sig_arr, scheme, n_filled, seg_count, max_step_s)
 
 
 # ------------------------------------------------------------------
 # Helpers
 # ------------------------------------------------------------------
-def _lin_fill(arr: np.ndarray) -> np.ndarray:
+def _lin_fill(arr: np.ndarray) -> tuple[np.ndarray, int]:
     """
-    Simple linear fill of NaNs in a 1-D array (in-place safe).
+    Linearly fill isolated NaNs (single-sample gaps) in a 1-D array.
+
+    Returns the filled array and the number of samples that were replaced.
     """
+    arr = arr.copy()
     isnan = ~np.isfinite(arr)
-    # if everything is NaN, return early
-    if isnan.all():
-        return arr
-    x = np.arange(len(arr))
-    arr[isnan] = np.interp(x[isnan], x[~isnan], arr[~isnan])
-    return arr
+    if not isnan.any():
+        return arr, 0
+
+    filled = 0
+    idx = np.where(isnan)[0]
+    for i in idx:
+        if i == 0 or i == len(arr) - 1:
+            continue
+        if isnan[i - 1] or isnan[i + 1]:
+            continue
+        left = arr[i - 1]
+        right = arr[i + 1]
+        if np.isfinite(left) and np.isfinite(right):
+            arr[i] = left + 0.5 * (right - left)
+            filled += 1
+    return arr, filled
+
+
+def _densify_segment(t: np.ndarray,
+                     v: np.ndarray,
+                     max_step_s: Optional[float],
+                     sigma: Optional[np.ndarray] = None
+                     ) -> tuple[np.ndarray, np.ndarray, Optional[np.ndarray]]:
+    """Densify a monotonic segment when large Δt would harm accuracy."""
+    if max_step_s is None or len(t) < 2:
+        return t, v, sigma
+
+    t_out = [float(t[0])]
+    v_out = [float(v[0])]
+    sigma_out = [float(sigma[0])] if sigma is not None else None
+
+    for idx in range(1, len(t)):
+        dt = float(t[idx] - t[idx - 1])
+        steps = max(1, int(np.ceil(dt / max_step_s)))
+        for step in range(1, steps + 1):
+            frac = step / steps
+            t_new = float(t[idx - 1] + frac * dt)
+            v_new = float(v[idx - 1] + frac * (v[idx] - v[idx - 1]))
+            t_out.append(t_new)
+            v_out.append(v_new)
+            if sigma is not None:
+                sig_new = float(sigma[idx - 1] + frac * (sigma[idx] - sigma[idx - 1]))
+                sigma_out.append(sig_new)
+
+    t_arr = np.asarray(t_out, dtype=float)
+    v_arr = np.asarray(v_out, dtype=float)
+    if sigma is not None:
+        sigma_arr = np.asarray(sigma_out, dtype=float)
+    else:
+        sigma_arr = None
+    return t_arr, v_arr, sigma_arr

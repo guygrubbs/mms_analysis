@@ -14,7 +14,7 @@ Key changes (May 2025)
 from __future__ import annotations
 from dataclasses import dataclass
 from functools import lru_cache
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Union, Sequence
 
 import numpy as np
 import warnings
@@ -45,6 +45,7 @@ class LMN:
     r_mid_min: float                     # λ_mid / λ_min
 
     meta: Optional[dict] = None          # optional pyspedas output, etc.
+    method: str = "mva"                  # source of the LMN triad
 
     # ------------------------------------------------------------------ #
     def to_lmn(self, vec_xyz: np.ndarray) -> np.ndarray:
@@ -119,7 +120,8 @@ def _do_mva(b_xyz: np.ndarray) -> LMN:
         r_mid_min = lam_mid / lam_min
         return LMN(L=L, M=M, N=N, R=R,
                    eigvals=(lam_max, lam_mid, lam_min),
-                   r_max_mid=r_max_mid, r_mid_min=r_mid_min)
+                   r_max_mid=r_max_mid, r_mid_min=r_mid_min,
+                   method='mva')
 
     r_max_mid = lam_max / lam_mid if abs(lam_mid) > eps else np.inf
     r_mid_min = lam_mid / lam_min if abs(lam_min) > eps else np.inf
@@ -138,7 +140,8 @@ def _do_mva(b_xyz: np.ndarray) -> LMN:
     return LMN(L=L, M=M, N=N, R=R,
                eigvals=(lam_max, lam_mid, lam_min),
                r_max_mid=r_max_mid,
-               r_mid_min=r_mid_min)
+               r_mid_min=r_mid_min,
+               method='mva')
 
 
 # =========================================================================== #
@@ -171,7 +174,7 @@ def _shue_normal(pos_gsm_km: np.ndarray,
 # =========================================================================== #
 def hybrid_lmn(b_xyz: np.ndarray,
                pos_gsm_km: Optional[np.ndarray] = None,
-               eig_ratio_thresh: float = 2.0,
+               eig_ratio_thresh: Optional[Union[float, Tuple[float, float]]] = None,
                cache_key: Optional[str] = None,
                formation_type: str = "auto") -> LMN:
     """
@@ -248,13 +251,17 @@ def hybrid_lmn(b_xyz: np.ndarray,
         - Shue et al. (1997): A new functional form to study the solar wind control
         - Paschmann & Daly (1998): Analysis Methods for Multi-Spacecraft Data
     """
+    ft_norm = _normalize_formation_type(formation_type)
+    thresholds = _resolve_thresholds(eig_ratio_thresh, ft_norm)
+
     if cache_key:          # small LRU cache for repeated calls on same data
         return _cached_hybrid(cache_key,
                               b_xyz.tobytes(), b_xyz.shape,
                               None if pos_gsm_km is None else pos_gsm_km.tobytes(),
-                              eig_ratio_thresh)
+                              thresholds,
+                              ft_norm)
 
-    return _compute_hybrid(b_xyz, pos_gsm_km, eig_ratio_thresh)
+    return _compute_hybrid(b_xyz, pos_gsm_km, thresholds, ft_norm)
 
 
 @lru_cache(maxsize=64)
@@ -262,10 +269,11 @@ def _cached_hybrid(_key: str,
                    b_bytes: bytes,
                    shape: Tuple[int, int],
                    pos_bytes: Optional[bytes],
-                   thresh: float) -> LMN:
+                   thresholds: Tuple[float, float],
+                   formation_type: str) -> LMN:
     b = np.frombuffer(b_bytes).reshape(shape)
     pos = None if pos_bytes is None else np.frombuffer(pos_bytes)
-    return _compute_hybrid(b, pos, thresh)
+    return _compute_hybrid(b, pos, thresholds, formation_type)
 
 
 # --------------------------------------------------------------------------- #
@@ -273,19 +281,39 @@ def _cached_hybrid(_key: str,
 # --------------------------------------------------------------------------- #
 def _compute_hybrid(b_xyz: np.ndarray,
                     pos_gsm_km: Optional[np.ndarray],
-                    eig_ratio_thresh: float) -> LMN:
+                    eig_ratio_thresh: Tuple[float, float],
+                    formation_type: str) -> LMN:
     """
     Internal: do MVA → maybe PySPEDAS → maybe Shue.
     Always returns a valid *LMN* instance.
     """
+    thr_max_mid, thr_mid_min = eig_ratio_thresh
+
     try:
         lm = _do_mva(b_xyz)
     except ValueError as err:
         warnings.warn(f"[coords] MVA failed ('{err}') – using Shue model normal")
-        return _shue_based_lmn(pos_gsm_km)
+        meta = {
+            'formation_type': formation_type,
+            'eig_ratio_thresholds': {
+                'lambda_max_mid': float(thr_max_mid),
+                'lambda_mid_min': float(thr_mid_min),
+            }
+        }
+        return _shue_based_lmn(pos_gsm_km, method='shue', meta=meta)
 
     # good MVA?
-    if lm.r_max_mid >= eig_ratio_thresh and lm.r_mid_min >= eig_ratio_thresh:
+    if lm.meta is None:
+        lm.meta = {}
+    lm.meta.update({
+        'formation_type': formation_type,
+        'eig_ratio_thresholds': {
+            'lambda_max_mid': float(thr_max_mid),
+            'lambda_mid_min': float(thr_mid_min),
+        }
+    })
+    if lm.r_max_mid >= thr_max_mid and lm.r_mid_min >= thr_mid_min:
+        lm.method = 'mva'
         return lm
 
     # weak eigen-ratios → try PySPEDAS (needs position)
@@ -296,23 +324,29 @@ def _compute_hybrid(b_xyz: np.ndarray,
             R = np.vstack((ps['lmn'][0], ps['lmn'][1], ps['lmn'][2]))
             return LMN(R[0], R[1], R[2], R,
                        lm.eigvals, lm.r_max_mid, lm.r_mid_min,
-                       meta=ps)
+                       meta=ps, method='pyspedas')
         except Exception as e:                      # pragma: no cover
             warnings.warn(f'pyspedas.lmn_matrix_make failed: {e}')
 
     # If no position available, keep MVA result but warn (tests expect finite eigvals)
     if pos_gsm_km is None:
         warnings.warn('[coords] Weak eigen-ratios – using MVA result (no position)')
+        if lm.meta is None:
+            lm.meta = {}
+        lm.meta['weak_eigen_ratio'] = True
+        lm.method = 'mva'
         return lm
 
     # fall back to Shue (position required)
     warnings.warn('[coords] Weak eigen-ratios – using Shue model normal')
-    return _shue_based_lmn(pos_gsm_km, base_lmn=lm)
+    return _shue_based_lmn(pos_gsm_km, base_lmn=lm, method='shue')
 
 
 # --------------------------------------------------------------------------- #
 def _shue_based_lmn(pos_gsm_km: Optional[np.ndarray],
-                    base_lmn: Optional[LMN] = None) -> LMN:
+                    base_lmn: Optional[LMN] = None,
+                    method: str = 'shue',
+                    meta: Optional[dict] = None) -> LMN:
     """
     Build an LMN triad from Shue normal plus a perpendicular vector.
     If *base_lmn* supplied, re-use its eigen-values for bookkeeping.
@@ -321,7 +355,9 @@ def _shue_based_lmn(pos_gsm_km: Optional[np.ndarray],
         # cannot do Shue without position – fabricate a dummy triad
         dummy = np.eye(3)
         return LMN(dummy[0], dummy[1], dummy[2], dummy,
-                   (np.nan, np.nan, np.nan), np.nan, np.nan)
+                   (np.nan, np.nan, np.nan), np.nan, np.nan,
+                   meta=meta,
+                   method=method)
 
     N = _shue_normal(pos_gsm_km)
     # choose an L perpendicular to N
@@ -336,4 +372,45 @@ def _shue_based_lmn(pos_gsm_km: Optional[np.ndarray],
     return LMN(L, M, N, R,
                ev,
                getattr(base_lmn, 'r_max_mid', np.nan),
-               getattr(base_lmn, 'r_mid_min', np.nan))
+               getattr(base_lmn, 'r_mid_min', np.nan),
+               meta=meta if meta is not None else getattr(base_lmn, 'meta', None),
+               method=method)
+
+
+def _normalize_formation_type(name: str) -> str:
+    return name.lower().strip().replace('-', '_')
+
+
+_FORMATION_THRESHOLDS = {
+    'auto': (2.0, 2.0),
+    'tetrahedral': (2.0, 2.0),
+    'planar': (3.0, 2.5),
+    'linear': (4.0, 3.0),
+    'string_of_pearls': (3.5, 2.5),
+    'irregular': (2.5, 2.0),
+    'collapsed': (np.inf, np.inf),
+}
+
+
+def _resolve_thresholds(user_thresh: Optional[Union[float, Tuple[float, float]]],
+                        formation_type: str) -> Tuple[float, float]:
+    """
+    Determine the pair of eigenvalue thresholds to use for the hybrid LMN logic.
+
+    The returned tuple is (λ_max/λ_mid threshold, λ_mid/λ_min threshold).
+    """
+    base = _FORMATION_THRESHOLDS.get(formation_type, _FORMATION_THRESHOLDS['auto'])
+
+    if user_thresh is None:
+        return base
+
+    if isinstance(user_thresh, Sequence) and not isinstance(user_thresh, (str, bytes)):
+        if len(user_thresh) == 0:
+            return base
+        if len(user_thresh) == 1:
+            val = float(user_thresh[0])
+            return (val, val)
+        return float(user_thresh[0]), float(user_thresh[1])
+
+    val = float(user_thresh)
+    return (val, val)

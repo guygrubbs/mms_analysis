@@ -11,8 +11,8 @@ Complete documentation of all modules, classes, and functions in the MMS Magneto
 | [`resample`](resample.md) | Multi-variable resampling | `merge_vars()`, `resample()` |
 | [`boundary`](boundary.md) | Boundary detection | `detect_crossings_multi()`, `DetectorCfg` |
 | [`electric`](electric.md) | E×B drift calculations | `exb_velocity()`, `normal_velocity()` |
-| [`motion`](motion.md) | Displacement integration | `integrate_disp()`, `DispResult` |
-| [`multispacecraft`](multispacecraft.md) | Timing analysis | `timing_normal()`, `stack_aligned()` |
+| [`motion`](motion.md) | Displacement integration (adaptive) | `integrate_disp()`, `DispResult` |
+| [`multispacecraft`](multispacecraft.md) | Timing analysis + diagnostics | `timing_normal()`, `stack_aligned()` |
 | [`visualize`](visualize.md) | Plotting utilities | `summary_single()`, `overlay_multi()` |
 | [`quality`](quality.md) | Data quality assessment | Quality flag handling |
 | [`spectra`](spectra.md) | Energy spectrograms | `fpi_ion_spectrogram()`, `fpi_electron_spectrogram()` |
@@ -32,11 +32,12 @@ t, vars, good = mp.resample.merge_vars(var_dict, cadence='150ms')
 # Transform coordinates
 lmn = mp.coords.hybrid_lmn(B_data)
 
-# Detect boundaries
-layers = mp.boundary.detect_crossings_multi(t, density, B_normal)
+# Detect boundaries (He⁺ density, total density, Bₙ)
+layers = mp.boundary.detect_crossings_multi(t, he_density, B_normal, ni=ion_density)
 
-# Multi-spacecraft timing
-n_hat, V_ph, sigma = mp.multispacecraft.timing_normal(positions, times)
+# Multi-spacecraft timing with diagnostics
+n_hat, V_ph, sigma, diag = mp.multispacecraft.timing_normal(positions, times, return_diagnostics=True)
+print(diag['condition_number'])
 ```
 
 ### Data Structures

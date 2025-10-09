@@ -98,8 +98,12 @@ def main() -> None:
         bn_indices = np.clip(bn_indices, 0, len(BN) - 1)
 
         layers = boundary.detect_crossings_multi(
-            t_grid, vars_grid['He'], BN[bn_indices],
-            good_mask=good['He'])
+            t_grid,
+            vars_grid['He'],
+            BN[bn_indices],
+            ni=vars_grid['Ni'],
+            good_mask=good['He'] & good['Ni'],
+        )
         xings = boundary.extract_enter_exit(layers, t_grid)
         crossings[p] = xings[0][0] if xings else np.nan
 

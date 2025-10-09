@@ -63,14 +63,19 @@ def _rotate_B_to_LMN(B_df: pd.DataFrame, probe: str, pos_mid: np.ndarray|None=No
 
 def _compute_crossings(t_idx: pd.DatetimeIndex, BN: pd.Series, evt_probe: dict, cadence='1s'):
     from mms_mp.boundary import detect_crossings_multi
-    # Optional auxiliary channel (total ion density) if present; otherwise NaNs
     he = pd.Series(np.nan, index=t_idx)
+    ni = pd.Series(np.nan, index=t_idx)
+    if 'N_he' in evt_probe and evt_probe['N_he'][0] is not None:
+        t_he, he_vals = evt_probe['N_he']
+        he_df = mp.data_loader.to_dataframe(t_he, he_vals, cols=['He'])
+        he_df = mp.data_loader.resample(he_df, cadence)
+        he = he_df['He'].reindex(t_idx, method='nearest')
     if 'N_tot' in evt_probe and evt_probe['N_tot'][0] is not None:
-        tN, N = evt_probe['N_tot']
-        N_df = mp.data_loader.to_dataframe(tN, N, cols=['N'])
-        N_df = mp.data_loader.resample(N_df, cadence)
-        he = N_df['N'].reindex(t_idx, method='nearest')
-    layers = detect_crossings_multi(t_idx.values, he.values, BN.values)
+        t_ni, ni_vals = evt_probe['N_tot']
+        ni_df = mp.data_loader.to_dataframe(t_ni, ni_vals, cols=['Ni'])
+        ni_df = mp.data_loader.resample(ni_df, cadence)
+        ni = ni_df['Ni'].reindex(t_idx, method='nearest')
+    layers = detect_crossings_multi(t_idx.values, he.values, BN.values, ni=ni.values)
     return layers
 
 
