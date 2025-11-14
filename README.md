@@ -174,6 +174,27 @@ python examples/2019_01_27_1200_visualization.py --overlay-json examples/overlay
 # reflects the current physics pipeline.
 ```
 
+### Event 2019‑01‑27 publication analysis (two LMN systems)
+```bash
+# Reproduce the three‑part analysis comparing LMN sets (all_1243 vs mixed_1230_1243)
+# Strict local caching: reads existing CDFs from ./pydata and never re‑downloads
+py -3.11 examples/analyze_20190127_dn_shear.py
+
+# Outputs (CSV + PNG) are saved to:
+#   results/events_pub/2019-01-27_1215-1255/
+# Inputs used:
+#   • mp_lmn_systems_20190127_1215-1255_mp-ver2b.sav (all_1243)
+#   • mp_lmn_systems_20190127_1215-1255_mp-ver3b.sav (mixed_1230_1243)
+```
+This script generates:
+- dn_mms{1–4}_{set}.csv, bn_stacked_{set}.png, dn_vs_time_{set}.png, shear_{set}.csv
+- crossings_{set}.csv (crossing time and rN position) and predictions_{set}.csv (DN‑based timing + errors)
+- summary_metrics.csv aggregating DN stats, first crossing per probe, shear, and prediction errors
+
+Notes:
+- Cold‑ion windows are inferred from local DIS moments when available; when DIS quality flags are absent in the local cache, a .sav‑based fallback is used and flagged in the logs.
+- Shear at 12:25 and 12:45 UT may be omitted if BN sign classification lacks both sides within ±60 s (documented as a data‑availability limitation).
+
 **Output files generated:**
 - `mms_magnetic_field_overview_*.png` - Individual spacecraft magnetic field analysis
 - `mms_plasma_overview_*.png` - Plasma parameter analysis
