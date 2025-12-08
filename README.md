@@ -191,6 +191,16 @@ This script generates:
 - crossings_{set}.csv (crossing time and rN position) and predictions_{set}.csv (DN‑based timing + errors)
 - summary_metrics.csv aggregating DN stats, first crossing per probe, shear, and prediction errors
 
+For the same 2019‑01‑27 12:15–12:55 window, FPI ion/electron spectrograms are available under
+`results/events_pub/2019-01-27_1215-1255/` as:
+
+- `mms{1–4}_DIS_omni.png` – ion differential energy flux spectrograms
+- `mms{1–4}_DES_omni.png` – electron differential energy flux spectrograms
+
+These spectrograms are derived from local NASA CDFs only; the .sav files for this event do not
+contain spectrogram/distribution data, so there is no .sav vs mms_mp spectrogram overlay. See
+`examples/make_event_figures_20190127.py` for the spectrogram‑generation workflow.
+
 Notes:
 - Cold‑ion windows are inferred from local DIS moments when available; when DIS quality flags are absent in the local cache, a .sav‑based fallback is used and flagged in the logs.
 - Shear at 12:25 and 12:45 UT may be omitted if BN sign classification lacks both sides within ±60 s (documented as a data‑availability limitation).
@@ -202,6 +212,30 @@ Notes:
 - `mms_ion_spectrograms_*.png` - Ion energy flux spectrograms
 - `mms_electron_spectrograms_2019_01_27.png` - Electron energy flux (all 4 spacecraft)
 - `mms_combined_spectrograms_2019_01_27.png` - Detailed ion/electron comparison
+
+
+
+### Archival and repository hygiene
+- Canonical, current outputs for the validated event live under: `results/events_pub/2019-01-27_1215-1255/`.
+- Outdated/obsolete results have been archived to `Archive/old_results/` (moved: `results/visualizations/`, `results/events/2019-01-27_1215-1255/`, and `results/comparison/`); superseded scratch/debug scripts (if any) are moved to `Archive/old_code/`.
+- We maintain strict local caching: analysis reads already-downloaded CDFs from your local pySPEDAS cache and the provided .sav files; nothing is re-downloaded.
+- Reproducibility: run `py -3.11 examples/analyze_20190127_dn_shear.py` to regenerate all event outputs.
+- Tests: run `py -3.11 -m pytest -q` to validate event outputs and sanity checks (crossing window, DN magnitude, shear range).
+- Diagnostics: run `py -3.11 examples/diagnostic_sav_vs_mmsmp_20190127.py`; outputs go to `results/events_pub/2019-01-27_1215-1255/diagnostics/`.
+
+### Reproducibility of .sav quantities (2019-01-27)
+- Data provenance (local CDFs used) and the full derivation chain are documented in:
+  - results/events_pub/2019-01-27_1215-1255/provenance.md
+- Derivation chain: CDF → pySPEDAS (notplot) → pandas (UTC, 1 s) → mms_mp.hybrid_lmn → rotate B/V → integrate DN (with Option 2 cold‑ion windows in the event script).
+- Quantitative diagnostics (see diagnostics/):
+  - bn_difference_stats.csv: includes RMS |ΔBN| and N‑vector angle differences; independent LMN differs substantially from curated .sav LMN (N‑angle ≈ 90° for this event). For publication, we treat .sav LMN as authoritative.
+  - dn_difference_stats.csv: DN metrics for DN(mms_mp) vs DN(.sav‑windowed), integrated over the same cold‑ion windows within 12:15–12:55; the published dn_mms*_all_1243.csv file has little to no overlap with this window and is used only as a secondary check.
+  - vn_overlay_mms{1–4}.png and vn_difference_stats.csv: visual and quantitative comparison of ViN from .sav vs mms_mp (rotated by .sav LMN); systematic offsets and decorrelation reflect differing quality‑flag and resampling choices rather than coding errors.
+- Takeaway:
+  - LMN can be derived independently from raw FGM (+MEC) but will depend on interval/method; curated .sav LMN remains the reference for this event.
+  - BN is fully reproducible from raw FGM once an LMN is chosen.
+  - VN is reproducible where DIS moments exist and quality is acceptable.
+  - DN is reproducible when the same cold‑ion windows are applied (event script implements Option 2 under strict local caching).
 
 
 ---

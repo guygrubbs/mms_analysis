@@ -700,10 +700,18 @@ def load_event(
                 meta['sources'][probe]['N_e'] = meta['sources'][probe].get('N_tot', 'reconstructed-from-ions')
                 _add_warning(meta, f'MMS{probe} N_e reconstructed from ion density (quasi-neutrality)')
                 continue
+            # For some intervals (including the 2019-01-27 event), electron bulk
+            # velocity V_e_gse may be entirely unavailable. In that case we keep
+            # the NaN stub but do not fail the whole load; scripts that rely on
+            # electrons can check for NaNs explicitly.
+            if var == 'V_e_gse':
+                meta['sources'][probe]['V_e_gse'] = 'unavailable-no-reconstruction'
+                _add_warning(meta, f'MMS{probe}: V_e_gse unavailable; leaving NaNs for interval {trange}')
+                continue
             raise RuntimeError(f'MMS{probe}: unable to reconstruct {var} – check data availability for {trange}')
 
     # --- Final sanity checks & coverage metadata -------------------------
-    essential_vars = ['N_tot', 'V_i_gse', 'N_e', 'V_e_gse', 'B_gsm']
+    essential_vars = ['N_tot', 'V_i_gse', 'N_e', 'B_gsm']
     for p in probes:
         for var in essential_vars:
             if var not in evt[p]:

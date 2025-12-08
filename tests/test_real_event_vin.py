@@ -10,7 +10,6 @@ from scipy.io import readsav
 
 IDL_SAV = Path('references/IDL_Code/mp_lmn_systems_20190127_1215_1255_mp_ver2.sav')
 EVENT_DIRS = [
-    Path('results/events/2019-01-27_1215-1255'),
     Path('results/events_pub/2019-01-27_1215-1255'),
 ]
 

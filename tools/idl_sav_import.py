@@ -5,8 +5,9 @@ Requires: SciPy (scipy.io.readsav)
 
 This module provides:
 - load_idl_sav(path): returns a dict with keys
-  'trange_full', 'trange_lmn', 'Lhat','Mhat','Nhat', and
-  'vi_lmn' -> { '1'..'4': { 't': np.ndarray[float seconds], 'vlmn': np.ndarray[N,3] } }
+  'trange_full', 'trange_lmn', 'Lhat','Mhat','Nhat',
+  'vi_lmn' -> { '1'..'4': { 't': np.ndarray[float seconds], 'vlmn': np.ndarray[N,3] } }, and
+  'b_lmn'  -> { '1'..'4': { 't': np.ndarray[float seconds], 'blmn': np.ndarray[N,3] } }
 
 - extract_vn_series(sav_data): returns { probe: (t, v_n) }
 
@@ -154,6 +155,45 @@ def load_idl_sav(path: str) -> Dict[str, Any]:
 
         vi_lmn[probe] = {'t': t_sec, 'vlmn': vlmn_arr}
 
+    # Magnetic field in LMN per spacecraft (B_LMN#), if present
+    b_lmn: Dict[str, Dict[str, np.ndarray]] = {}
+    for probe in ['1','2','3','4']:
+        key = f'B_LMN{probe}'
+        bdat = _get(key)
+        if bdat is None:
+            continue
+        arr = _coerce_array(bdat)
+        # Typical layout is recarray with shape (1,) where element has (t, B_lmn)
+        rec = arr[0] if isinstance(arr, np.ndarray) and arr.size else bdat
+        t_raw = getattr(rec, 'x', None)
+        y_raw = getattr(rec, 'y', None)
+        if t_raw is None or y_raw is None:
+            try:
+                t_raw = rec[0]
+                y_raw = rec[1]
+            except Exception:
+                continue
+        t_sec = _to_float_seconds(t_raw)
+        blmn_arr = _coerce_array(y_raw)
+        blmn_arr = np.asarray(blmn_arr, dtype=float)
+        if blmn_arr.ndim == 3 and 1 in blmn_arr.shape:
+            blmn_arr = np.squeeze(blmn_arr)
+        if blmn_arr.ndim == 2 and blmn_arr.shape[0] == 3:
+            blmn_arr = blmn_arr.T  # (N,3)
+        if blmn_arr.ndim == 1 and blmn_arr.size % 3 == 0:
+            blmn_arr = blmn_arr.reshape(-1, 3)
+
+	    	# NOTE: For the 2019-01-27 event file
+	    	#   "mp_lmn_systems_20190127_1215-1255_mp-ver2b.sav",
+	    	# diagnostics against CDF-rotated B show that the native B_LMN arrays
+	    	# are stored with columns ordered as (B_N, B_L, B_M), not (B_L, B_M, B_N).
+	    	#
+	    	# We deliberately keep this "raw" ordering here and handle any
+	    	# component re-mapping in downstream diagnostics (e.g.,
+	    	# examples/diagnostic_sav_vs_mmsmp_20190127.py) so that this loader
+	    	# remains a thin, mostly generic wrapper around the .sav structure.
+        b_lmn[probe] = {'t': t_sec, 'blmn': blmn_arr}
+
     return {
         'trange_full': trange_full,
         'lmn': lmn_per_probe,
@@ -163,6 +203,7 @@ def load_idl_sav(path: str) -> Dict[str, Any]:
         'Mhat': None,
         'Nhat': None,
         'vi_lmn': vi_lmn,
+        'b_lmn': b_lmn,
     }
 
 
