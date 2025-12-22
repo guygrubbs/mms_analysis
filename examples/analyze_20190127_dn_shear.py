@@ -482,13 +482,182 @@ def _minimal_event(trange, probes):
     return evt
 
 
+def _run_analysis_for_lmn_set(evt, vt, label, lmn_map, sav=None, summary_rows=None):
+    """Run the full DN / crossings / shear pipeline for a given LMN set.
+
+    Parameters
+    ----------
+    evt : dict
+        Event data as returned by :func:`mms_mp.load_event` or ``_minimal_event``.
+    vt : dict
+        Cold-ion windows per probe.
+    label : str
+        Short label identifying the LMN source (e.g. ``"all_1243"``,
+        ``"mixed_1230_1243"``, or ``"algorithmic"``).
+    lmn_map : dict
+        Mapping ``probe -> {"L", "M", "N"}`` with unit vectors in GSM.
+    sav : dict, optional
+        Optional IDL ``.sav`` payload providing VI_LMN fallback when DIS is
+        missing or degenerate.
+    summary_rows : list, optional
+        Existing list of summary metric rows to extend.
+    """
+    if summary_rows is None:
+        summary_rows = []
+
+    BN, VN, DN = build_timeseries(evt, lmn_map, vt, sav=sav)
+    plot_dn(DN, vt, label)
+
+    # Export DN series per probe for this LMN set
+    for p, series in DN.items():
+        if series is not None and len(series) > 0:
+            (series.to_frame(name='DN_km')).to_csv(EVENT_DIR / f'dn_mms{p}_{label}.csv')
+
+    plot_bn_stack(BN, vt, label)
+    cross_df, pred_df = crossings_and_predictions(BN, VN, evt, lmn_map, label)
+    plot_pred_vs_actual(pred_df, label)
+    shear_df = shear_and_xline(evt, lmn_map, BN, label)
+
+    # Collect key metrics
+    # DN stats per probe
+    for p, series in DN.items():
+        if series is None:
+            continue
+        vals = pd.Series(series.values)
+        if vals.dropna().empty:
+            continue
+        summary_rows.append({
+            'set': label,
+            'probe': p,
+            'dn_median_km': float(np.nanmedian(vals.values)),
+            'dn_maxabs_km': float(np.nanmax(np.abs(vals.values))),
+        })
+
+    if not cross_df.empty:
+        first_cross = cross_df.sort_values('time_utc').groupby('probe').head(1)
+        for _, r in first_cross.iterrows():
+            summary_rows.append({
+                'set': label,
+                'probe': r['probe'],
+                'cross_time': r['time_utc'],
+                'rN_km': r['rN_km'],
+            })
+
+    for _, r in shear_df.iterrows():
+        summary_rows.append({
+            'set': label,
+            'probe': r['probe'],
+            'time': r['time_utc'],
+            'shear_deg': r['shear_deg'],
+            'sigma_deg': r['sigma_deg'],
+        })
+
+    if not pred_df.empty:
+        g = pred_df.groupby(['set', 'ref', 'tgt'])['err_s'].agg(['median', 'mean', 'std']).reset_index()
+        for _, r in g.iterrows():
+            summary_rows.append({
+                'set': label,
+                'ref': r['ref'],
+                'tgt': r['tgt'],
+                'pred_err_median_s': r['median'],
+                'pred_err_mean_s': r['mean'],
+                'pred_err_std_s': r['std'],
+            })
+
+    # Save per-set CSVs
+    cross_df.to_csv(EVENT_DIR / f'crossings_{label}.csv', index=False)
+    pred_df.to_csv(EVENT_DIR / f'predictions_{label}.csv', index=False)
+    shear_df.to_csv(EVENT_DIR / f'shear_{label}.csv', index=False)
+
+    return summary_rows
+
+
+def _build_algorithmic_lmn_map(evt, window_half_width_s: float = 30.0):
+    """Construct an LMN map using the physics-driven algorithmic LMN builder.
+
+    This helper wraps :func:`mms_mp.coords.algorithmic_lmn` for the
+    2019-01-27 event.  It uses **CDF-only inputs** (FGM B_gsm and MEC
+    POS_gsm) plus manually curated boundary crossing times near 12:43 UT.
+
+    The crossing times originate from earlier analysis using the IDL ``.sav``
+    products, but are encoded here as simple UTC timestamps so that the *runtime*
+    LMN construction depends only on CDF data.
+    """
+    from mms_mp.coords import algorithmic_lmn
+
+    b_times = {}
+    b_vals = {}
+    pos_times = {}
+    pos_vals = {}
+
+    for p in PROBES:
+        data = evt.get(p, {})
+        if 'B_gsm' not in data or 'POS_gsm' not in data:
+            continue
+        tB, B = data['B_gsm']
+        tP, P = data['POS_gsm']
+        if tB is None or B is None or tP is None or P is None:
+            continue
+        b_times[p] = np.asarray(tB, dtype=float)
+        b_vals[p] = np.asarray(B, dtype=float)
+        pos_times[p] = np.asarray(tP, dtype=float)
+        pos_vals[p] = np.asarray(P, dtype=float)
+
+    # Crossing times near the main magnetopause crossing (~12:43 UT).
+    # These are specified in UTC; pandas converts to epoch seconds.
+    t_cross_utc = {
+        '1': '2019-01-27T12:43:25',
+        '2': '2019-01-27T12:43:26',
+        '3': '2019-01-27T12:43:18',
+        '4': '2019-01-27T12:43:26',
+    }
+    t_cross = {}
+    for p, ts in t_cross_utc.items():
+        if p in b_times:
+            t_cross[p] = pd.Timestamp(ts, tz='UTC').timestamp()
+
+    if len(t_cross) < 2:
+        raise RuntimeError("algorithmic LMN requires at least two probes with crossing times.")
+
+    lmn_per_probe = algorithmic_lmn(
+        b_times=b_times,
+        b_gsm=b_vals,
+        pos_times=pos_times,
+        pos_gsm_km=pos_vals,
+        t_cross=t_cross,
+        # The default normal_weights (0.8, 0.15, 0.05) were optimised for this
+        # event via examples/algorithmic_lmn_param_sweep_20190127.py and give
+        # mean N-angle differences < 7° and BN correlations > 0.9997 vs the
+        # expert .sav LMN while remaining physically well-motivated.
+        window_half_width_s=window_half_width_s,
+        tangential_strategy="Bmean",
+        normal_weights=(0.8, 0.15, 0.05),
+    )
+
+    # Convert LMN objects to the mapping expected by build_timeseries.
+    lmn_map = {
+        p: {'L': lm.L, 'M': lm.M, 'N': lm.N}
+        for p, lm in lmn_per_probe.items()
+    }
+    return lmn_map
+
+
 def main():
     try:
-        evt=mp.load_event(list(TRANGE), probes=list(PROBES), include_ephem=True, data_rate_fgm='srvy', data_rate_fpi='fast', include_hpca=False)
+        evt = mp.load_event(
+            list(TRANGE),
+            probes=list(PROBES),
+            include_ephem=True,
+            data_rate_fgm='srvy',
+            data_rate_fpi='fast',
+            include_hpca=False,
+        )
     except Exception:
-        evt=_minimal_event(list(TRANGE), list(PROBES))
+        evt = _minimal_event(list(TRANGE), list(PROBES))
+
     # Option 2: infer cold-ion windows from local DIS moments (strict local cache)
-    vt=infer_cold_ion_windows(evt)
+    vt = infer_cold_ion_windows(evt)
+
     # Fallback: if DIS-based vt inference produced no windows, derive from .sav VI_LMN
     if sum(len(v) for v in vt.values()) == 0:
         try:
@@ -498,48 +667,28 @@ def main():
             print('Note: DIS-based vt inference empty; using .sav-derived cold-ion windows fallback.')
         except Exception as e:
             print('Warning: failed to derive vt from .sav fallback:', e)
-    summary_rows=[]
+
+    summary_rows = []
+
+    # 1) Original .sav-based LMN sets (authoritative reference frames)
     for label, savpath in SAVS.items():
-        sav=load_idl_sav(savpath); lmn_map=sav.get('lmn',{})
-        BN,VN,DN = build_timeseries(evt, lmn_map, vt, sav=sav)
-        plot_dn(DN, vt, label)
-        # Export DN series per probe for this LMN set
-        for p,series in DN.items():
-            if series is not None and len(series)>0:
-                (series.to_frame(name='DN_km')).to_csv(EVENT_DIR / f'dn_mms{p}_{label}.csv')
-        plot_bn_stack(BN, vt, label)
-        cross_df, pred_df = crossings_and_predictions(BN, VN, evt, lmn_map, label)
-        plot_pred_vs_actual(pred_df, label)
-        shear_df = shear_and_xline(evt, lmn_map, BN, label)
-        # Collect key metrics
-        # DN stats per probe
-        for p, series in DN.items():
-            if series is None:
-                continue
-            vals = pd.Series(series.values)
-            if vals.dropna().empty:
-                continue
-            summary_rows.append({'set':label,'probe':p,
-                                 'dn_median_km': float(np.nanmedian(vals.values)),
-                                 'dn_maxabs_km': float(np.nanmax(np.abs(vals.values)))})
-        if not cross_df.empty:
-            first_cross=cross_df.sort_values('time_utc').groupby('probe').head(1)
-            for _,r in first_cross.iterrows():
-                summary_rows.append({'set':label,'probe':r['probe'],'cross_time':r['time_utc'],'rN_km':r['rN_km']})
-        for _,r in shear_df.iterrows():
-            summary_rows.append({'set':label,'probe':r['probe'],'time':r['time_utc'],'shear_deg':r['shear_deg'],'sigma_deg':r['sigma_deg']})
-        if not pred_df.empty:
-            g=pred_df.groupby(['set','ref','tgt'])['err_s'].agg(['median','mean','std']).reset_index()
-            for _,r in g.iterrows():
-                summary_rows.append({'set':label,'ref':r['ref'],'tgt':r['tgt'],'pred_err_median_s':r['median'],'pred_err_mean_s':r['mean'],'pred_err_std_s':r['std']})
-        # Save per-set CSVs
-        cross_df.to_csv(EVENT_DIR/f'crossings_{label}.csv', index=False)
-        pred_df.to_csv(EVENT_DIR/f'predictions_{label}.csv', index=False)
-        shear_df.to_csv(EVENT_DIR / f'shear_{label}.csv', index=False)
+        sav = load_idl_sav(savpath)
+        lmn_map = sav.get('lmn', {})
+        summary_rows = _run_analysis_for_lmn_set(evt, vt, label, lmn_map, sav=sav, summary_rows=summary_rows)
+
+    # 2) Physics-driven algorithmic LMN (CDF-only at runtime)
+    try:
+        alg_label = 'algorithmic'
+        lmn_alg_map = _build_algorithmic_lmn_map(evt, window_half_width_s=30.0)
+        summary_rows = _run_analysis_for_lmn_set(evt, vt, alg_label, lmn_alg_map, sav=None, summary_rows=summary_rows)
+    except Exception as e:
+        print('Warning: algorithmic LMN analysis failed:', e)
+
     if summary_rows:
-        pd.DataFrame(summary_rows).to_csv(EVENT_DIR/'summary_metrics.csv', index=False)
+        pd.DataFrame(summary_rows).to_csv(EVENT_DIR / 'summary_metrics.csv', index=False)
     print('Analysis outputs saved to', EVENT_DIR)
 
-if __name__=='__main__':
+
+if __name__ == '__main__':
     main()
 

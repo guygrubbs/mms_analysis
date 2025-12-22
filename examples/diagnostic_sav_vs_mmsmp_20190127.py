@@ -40,6 +40,14 @@ B_LMN = sav.get('b_lmn', {})
 # Load event (B_gsm, V_i_gse, POS_gsm) at 1s cadence
 _evt = an._minimal_event(TRANGE, PROBES)
 
+# Optional physics-driven algorithmic LMN map (CDF-only at runtime)
+ALG_LMN_MAP = None
+if hasattr(an, '_build_algorithmic_lmn_map'):
+    try:
+        ALG_LMN_MAP = an._build_algorithmic_lmn_map(_evt)
+    except Exception as e:
+        print('Warning: failed to construct algorithmic LMN map for diagnostics:', e)
+
 def _ensure_utc(s: pd.Series) -> pd.Series:
     idx = s.index
     try:
@@ -186,7 +194,16 @@ for p in PROBES:
     Bdf = _ensure_df_utc(Bdf)
     # LMN from .sav
     L = np.asarray(LMN[key]['L'], float); M = np.asarray(LMN[key]['M'], float); N = np.asarray(LMN[key]['N'], float)
-    R_sav = np.vstack([L,M,N]).T
+    R_sav = np.vstack([L, M, N]).T
+    # Optional algorithmic LMN (physics-driven, CDF-only)
+    R_alg = None
+    N_alg = None
+    if ALG_LMN_MAP is not None and key in ALG_LMN_MAP:
+        L_alg = np.asarray(ALG_LMN_MAP[key]['L'], float)
+        M_alg = np.asarray(ALG_LMN_MAP[key]['M'], float)
+        N_alg = np.asarray(ALG_LMN_MAP[key]['N'], float)
+        R_alg = np.vstack([L_alg, M_alg, N_alg]).T
+
     # Hybrid LMN computed over the same time interval used in the .sav for LMN
     t_range = sav.get('trange_lmn_per_probe', {}).get(key)
     if t_range is not None and len(t_range) >= 2:
@@ -204,21 +221,26 @@ for p in PROBES:
         Bwin = Bdf.iloc[i0:i1]
     lmn_h = mp.coords.hybrid_lmn(Bwin.values, pos_gsm_km=None, eig_ratio_thresh=2.0)
     R_mms = np.vstack([lmn_h.L, lmn_h.M, lmn_h.N]).T
-    # B in .sav LMN frame from CDF (all components), and BN in hybrid LMN
+
+    # B in .sav LMN frame from CDF (all components), and BN in hybrid / algorithmic LMN
     B_lmn_sav = Bdf.values @ R_sav  # (N,3) → BL, BM, BN in .sav LMN
     BL_sav = pd.Series(B_lmn_sav[:, 0], index=Bdf.index, name="BL_sav")
     BM_sav = pd.Series(B_lmn_sav[:, 1], index=Bdf.index, name="BM_sav")
     BN_sav = pd.Series(B_lmn_sav[:, 2], index=Bdf.index, name='BN_sav')
 
-    BN_mms = pd.Series((Bdf.values @ R_mms)[:,2], index=Bdf.index, name='BN_mms')
+    BN_mms = pd.Series((Bdf.values @ R_mms)[:, 2], index=Bdf.index, name='BN_mms')
+    BN_alg = None
+    if R_alg is not None:
+        BN_alg = pd.Series((Bdf.values @ R_alg)[:, 2], index=Bdf.index, name='BN_alg')
+
     bn_grid = BN_sav.index
+
+    # Hybrid vs .sav metrics
     mae_bn, rmse_bn, corr_bn, max_abs_bn, n_valid_bn, n_gaps_bn, cov_bn = _stats_with_gaps(bn_grid, BN_mms, BN_sav)
     diff_bn = (BN_mms - BN_sav).reindex(bn_grid)
-
     n_exceed = int(np.sum(np.abs(diff_bn.values) > 0.5))
-    # intervals where |ΔBN|>0.5 nT for >=10 s
+    # intervals where |ΔBN|>0.5 nT for >=10 s (hybrid only, for continuity with earlier reports)
     bn_intervals = _find_exceedance_intervals(bn_grid, diff_bn, 0.5, 10)
-    # N-angle difference (acute angle, ignores sign)
     bn_exceed[key] = bn_intervals
 
     N_mms = lmn_h.N / np.linalg.norm(lmn_h.N)
@@ -227,6 +249,7 @@ for p in PROBES:
     ang_deg = float(np.degrees(np.arccos(cosang)))
     rows_bn.append({
         'probe': key,
+        'source': 'hybrid',
         'mae_nT': float(mae_bn),
         'rmse_nT': float(rmse_bn),
         'corr': float(corr_bn),
@@ -246,11 +269,42 @@ for p in PROBES:
         'coverage_fraction': float(cov_bn),
     })
 
-    # Plot overlay for BN (hybrid vs .sav LMN)
+    # Algorithmic vs .sav metrics (if available)
+    if BN_alg is not None and N_alg is not None:
+        mae_bn_a, rmse_bn_a, corr_bn_a, max_abs_bn_a, n_valid_bn_a, n_gaps_bn_a, cov_bn_a = _stats_with_gaps(bn_grid, BN_alg, BN_sav)
+        diff_bn_a = (BN_alg - BN_sav).reindex(bn_grid)
+        n_exceed_a = int(np.sum(np.abs(diff_bn_a.values) > 0.5))
+        N_alg_u = N_alg / np.linalg.norm(N_alg)
+        cosang_a = float(np.clip(np.abs(np.dot(N_alg_u, N_sav)), -1.0, 1.0))
+        ang_deg_a = float(np.degrees(np.arccos(cosang_a)))
+        rows_bn.append({
+            'probe': key,
+            'source': 'algorithmic',
+            'mae_nT': float(mae_bn_a),
+            'rmse_nT': float(rmse_bn_a),
+            'corr': float(corr_bn_a),
+            'n_exceed_0p5nT': n_exceed_a,
+            'N_angle_diff_deg': ang_deg_a,
+        })
+        all_stats.append({
+            'probe': key,
+            'quantity': 'BN_algorithmic',
+            'mae': float(mae_bn_a),
+            'rmse': float(rmse_bn_a),
+            'correlation': float(corr_bn_a),
+            'max_abs_diff': float(max_abs_bn_a),
+            'n_samples': int(n_valid_bn_a),
+            'n_gaps': int(n_gaps_bn_a),
+            'coverage_fraction': float(cov_bn_a),
+        })
+
+    # Plot overlay for BN (hybrid and algorithmic vs .sav LMN)
     fig, ax = plt.subplots(figsize=(10,4))
     ax.plot(BN_sav.index, BN_sav.values, label='BN (sav LMN)', lw=1.1)
-    ax.plot(BN_mms.index, BN_mms.values, label='BN (hybrid LMN)', lw=1.1, alpha=0.8)
-    ax.set_title(f'MMS{key} BN comparison (.sav LMN vs hybrid LMN)')
+    ax.plot(BN_mms.index, BN_mms.values, label='BN (hybrid LMN)', lw=1.1, alpha=0.85)
+    if BN_alg is not None:
+        ax.plot(BN_alg.index, BN_alg.values, label='BN (algorithmic LMN)', lw=1.1, alpha=0.8)
+    ax.set_title(f'MMS{key} BN comparison (.sav LMN vs hybrid/algorithmic LMN)')
     ax.set_ylabel('B_N (nT)'); ax.grid(True, alpha=0.3); ax.legend()
     fig.tight_layout(); fig.savefig(OUT / f'bn_overlay_mms{key}.png', dpi=220); plt.close(fig)
 
@@ -499,16 +553,27 @@ lines = [
     '',
 ]
 if rows_bn:
-    lines.append('## BN differences (hybrid LMN vs .sav LMN)')
-    for r in rows_bn:
-        lines.append(f"- MMS{r['probe']}: MAE={r['mae_nT']:.3f} nT, RMSE={r['rmse_nT']:.3f} nT, corr={r['corr']:.3f}, count(|Δ|>0.5 nT)={r['n_exceed_0p5nT']}, N-angle diff≈{r['N_angle_diff_deg']:.1f}°")
-    # Exceedance intervals summary
-    lines.append('  Exceedance intervals where |ΔBN|>0.5 nT for ≥10 s:')
+    lines.append('## BN differences vs .sav LMN (hybrid and algorithmic)')
+    sources = sorted({r.get('source', 'hybrid') for r in rows_bn})
+    for src in sources:
+        lines.append(f'### Source: {src}')
+        for r in rows_bn:
+            if r.get('source', 'hybrid') != src:
+                continue
+            lines.append(
+                f"- MMS{r['probe']}: MAE={r['mae_nT']:.3f} nT, RMSE={r['rmse_nT']:.3f} nT, "
+                f"corr={r['corr']:.3f}, count(|Δ|>0.5 nT)={r['n_exceed_0p5nT']}, "
+                f"N-angle diff≈{r['N_angle_diff_deg']:.1f}°"
+            )
+    # Exceedance intervals summary (hybrid LMN only)
+    lines.append('  Exceedance intervals where |ΔBN|>0.5 nT for ≥10 s (hybrid LMN):')
     for key in PROBES:
         segs = bn_exceed.get(key, [])
         if segs:
-            for (t0,t1,dur,maxd) in segs[:5]:  # show up to 5 per probe
-                lines.append(f"  - MMS{key}: {t0} → {t1} (dur={int(dur)} s), max |ΔBN|={maxd:.2f} nT")
+            for (t0, t1, dur, maxd) in segs[:5]:  # show up to 5 per probe
+                lines.append(
+                    f"  - MMS{key}: {t0} → {t1} (dur={int(dur)} s), max |ΔBN|={maxd:.2f} nT"
+                )
 
 if rows_vn:
     lines.append('\n## VN differences (.sav ViN vs mms_mp V_i·N_sav)')

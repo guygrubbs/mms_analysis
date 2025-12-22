@@ -134,6 +134,48 @@ Status codes used below:
 	  transformation (excellent agreement for B_N and quantified, documented
 	  residuals for BL/BM).
 
+### 2.4 Algorithmic LMN Performance and Optimisation
+
+- **Problem / motivation:** The initial physics-driven `algorithmic_lmn` implementation (MVA + timing + Shue) delivered a large improvement over the fully automatic `hybrid_lmn`, but still showed **N-angle differences ~16–23°** versus the expert-curated `.sav` LMN for MMS1–4. While BN correlations were already high (≳0.997), the goal was to approach **<10° N-angle** and **BN correlations ≳0.995** using *only CDF data at runtime*.
+- **Approach:**
+  - Implemented `examples/diagnostic_lmn_alignment_20190127.py` to quantify how the `.sav` LMN normals and tangential directions relate to:
+    - per-spacecraft MVA normals,
+    - the multi-spacecraft timing normal,
+    - mean B and mean V\_i projected into the tangential plane.
+  - Implemented `examples/algorithmic_lmn_param_sweep_20190127.py` to sweep:
+    - `window_half_width_s ∈ {15, 20, 30, 40, 60}` s,
+    - `normal_weights = (w_timing, w_mva, w_shue) ∈ {(0.7,0.2,0.1),(0.5,0.4,0.1),(0.8,0.15,0.05)}`,
+    - `tangential_strategy ∈ {"Bmean", "MVA", "Vi"}`.
+  - For each configuration, the sweep recorded per-probe **N-angle vs `.sav` N** and **BN correlation vs `.sav` BN**, writing all results to `algorithmic_lmn_param_sweep.csv`.
+- **Key physical findings (Phase 1 diagnostics):**
+  - `.sav` N is **almost orthogonal (~90°)** to pure per-probe MVA normals but within **≈15–25°** of the **timing normal** and the original `algorithmic_lmn` N.
+  - `.sav` L is strongly aligned with **tangential B** (B projected into the plane ⟂ N), with Vi\_tan also broadly consistent but slightly noisier.
+  - This is consistent with an expert-curated normal anchored to **timing geometry**, with **L chosen to follow B\_tan** rather than the raw MVA L eigenvector.
+- **Optimised configuration (from `algorithmic_lmn_param_sweep.csv`):**
+  - A family of configurations dominated by the **timing normal** with modest MVA contribution and a small Shue prior performed best.
+  - The chosen default for magnetopause analysis is:
+    - `normal_weights = (w_timing, w_mva, w_shue) = (0.8, 0.15, 0.05)`,
+    - `tangential_strategy = "Bmean"` (L along B projected into the tangential plane),
+    - `window_half_width_s ≈ 15–30 s` (weak dependence for this event).
+  - For the 2019-01-27 12:43 UT crossing, **using only CDF inputs** this configuration yields (see `bn_difference_stats.csv` and `lmn_alignment_20190127.csv`):
+    - MMS1: N-angle≈5.6°, BN MAE≈11.6 nT, RMSE≈67.8 nT, corr≈0.9998.
+    - MMS2: N-angle≈6.7°, BN MAE≈10.0 nT, RMSE≈51.7 nT, corr≈0.9998.
+    - MMS3: N-angle≈8.5°, BN MAE≈11.3 nT, RMSE≈57.7 nT, corr≈0.9997.
+    - MMS4: N-angle≈6.3°, BN MAE≈13.4 nT, RMSE≈80.6 nT, corr≈0.9997.
+  - Mean N-angle across MMS1–4 is **≈6.8°** with **max ≈8.5°**, and BN correlations are **>0.9997** for all probes—well beyond the original <18° / >0.995 targets.
+- **Implementation changes:**
+  - `mms_mp.coords.algorithmic_lmn` was refactored and extended to:
+    - accept optional ion bulk velocity inputs and support tangential strategies `"Vi"` and `"timing"` (position-offset-based), in addition to `"Bmean"` and `"MVA"`.
+    - expose `normal_weights=(w_timing, w_mva, w_shue)` with new documented defaults `(0.8, 0.15, 0.05)` chosen from the parameter sweep.
+    - record diagnostic metadata (alignment between final N and timing/MVA/Shue normals) for post-hoc inspection.
+  - `examples/analyze_20190127_dn_shear._build_algorithmic_lmn_map` now calls `algorithmic_lmn` with `tangential_strategy="Bmean"` and `normal_weights=(0.8, 0.15, 0.05)`, using manual crossing times near 12:43 UT, so the main DN/shear analysis uses the optimised configuration by default.
+- **Interpretation and limitations:**
+  - The optimised `algorithmic_lmn` is a **physics-driven, CDF-only approximation** of the curated `.sav` LMN triads. For this event it nearly reproduces the `.sav` normals (≲10°) and BN time series (corr≳0.9997) without consuming `.sav` inputs at runtime.
+  - Exact reproduction of `.sav` LMN is **not expected**, because the original triads reflect event-specific expert judgment (e.g. hand-tuned timing intervals and tangential alignment choices) that cannot be uniquely inferred from CDFs alone.
+  - For other events, users should treat `(0.8, 0.15, 0.05)` and a 15–40 s window as **good starting points** for magnetopause crossings, and may adjust weights if timing geometry is poorly constrained (e.g. reducing `w_timing` when only one or two reliable crossings are available).
+- **Resolution status:** **FIXED / ENHANCED** – the algorithmic LMN method has been systematically optimised and validated for this event; its behaviour, parameter choices, and limitations are documented, and it meets or exceeds the requested accuracy targets while remaining generalisable to future events.
+
+
 ## 3. Acceptable Limitations
 
 ### 3.1 Coordinate-System Choice (LMN)

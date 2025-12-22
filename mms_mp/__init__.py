@@ -39,7 +39,7 @@ from . import cli
 
 # Make key functions easily accessible
 from .data_loader import load_event
-from .coords import hybrid_lmn
+from .coords import hybrid_lmn, algorithmic_lmn
 from .boundary import detect_crossings_multi, DetectorCfg
 from .motion import integrate_disp
 from .multispacecraft import timing_normal
@@ -74,6 +74,7 @@ __all__ = [
     # Key functions
     "load_event",
     "hybrid_lmn",
+    "algorithmic_lmn",
     "detect_crossings_multi",
     "DetectorCfg",
     "integrate_disp",

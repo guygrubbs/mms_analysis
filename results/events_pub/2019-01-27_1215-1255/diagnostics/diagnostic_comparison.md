@@ -3,12 +3,18 @@
 - Strict local caching: all inputs loaded from local CDFs only (no re-downloads).
 - DN integration uses the same cold-ion windowing as published all_1243 outputs.
 
-## BN differences (hybrid LMN vs .sav LMN)
+## BN differences vs .sav LMN (hybrid and algorithmic)
+### Source: algorithmic
+- MMS1: MAE=11.578 nT, RMSE=67.772 nT, corr=1.000, count(|Δ|>0.5 nT)=25795, N-angle diff≈5.6°
+- MMS2: MAE=9.968 nT, RMSE=51.709 nT, corr=1.000, count(|Δ|>0.5 nT)=41815, N-angle diff≈6.7°
+- MMS3: MAE=11.294 nT, RMSE=57.660 nT, corr=1.000, count(|Δ|>0.5 nT)=51244, N-angle diff≈8.5°
+- MMS4: MAE=13.391 nT, RMSE=80.621 nT, corr=1.000, count(|Δ|>0.5 nT)=28312, N-angle diff≈6.3°
+### Source: hybrid
 - MMS1: MAE=395.219 nT, RMSE=1421.218 nT, corr=0.798, count(|Δ|>0.5 nT)=80644, N-angle diff≈89.7°
 - MMS2: MAE=355.806 nT, RMSE=1249.658 nT, corr=0.863, count(|Δ|>0.5 nT)=81598, N-angle diff≈89.6°
 - MMS3: MAE=351.808 nT, RMSE=1232.849 nT, corr=0.873, count(|Δ|>0.5 nT)=81939, N-angle diff≈89.7°
 - MMS4: MAE=396.521 nT, RMSE=1422.198 nT, corr=0.790, count(|Δ|>0.5 nT)=81017, N-angle diff≈89.2°
-  Exceedance intervals where |ΔBN|>0.5 nT for ≥10 s:
+  Exceedance intervals where |ΔBN|>0.5 nT for ≥10 s (hybrid LMN):
   - MMS1: 2019-01-27 00:00:04+00:00 → 2019-01-27 00:07:24+00:00 (dur=440 s), max |ΔBN|=3.52 nT
   - MMS1: 2019-01-27 00:07:55+00:00 → 2019-01-27 00:08:05+00:00 (dur=10 s), max |ΔBN|=0.87 nT
   - MMS1: 2019-01-27 00:08:06+00:00 → 2019-01-27 00:08:27+00:00 (dur=21 s), max |ΔBN|=0.97 nT
