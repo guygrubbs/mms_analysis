@@ -141,7 +141,8 @@ def _generic_pcolormesh(t: np.ndarray,
                         mask: Optional[np.ndarray],
                         ax: Optional[plt.Axes],
                         return_axes: bool,
-                        show: bool):
+                        show: bool,
+                        cax: Optional[plt.Axes] = None):
     if ax is None:
         fig, ax = plt.subplots(1, 1, figsize=(8, 3))
 
@@ -163,7 +164,13 @@ def _generic_pcolormesh(t: np.ndarray,
         ax.set_xlabel('Time (s)')
     if title:
         ax.set_title(title)
-    cb = plt.colorbar(pcm, ax=ax, pad=0.02)
+    # When a dedicated colorbar axes is provided, draw the colour bar there so
+    # that the main plotting axes width is unaffected (useful for vertically
+    # stacked layouts where panel widths must align).
+    if cax is not None:
+        cb = plt.colorbar(pcm, cax=cax)
+    else:
+        cb = plt.colorbar(pcm, ax=ax, pad=0.02)
     cb.set_label(clabel)
     if show:
         plt.tight_layout(); plt.show()
@@ -187,7 +194,8 @@ def generic_spectrogram(t: np.ndarray,
                         ax: Optional[plt.Axes] = None,
                         show: bool = True,
                         return_axes: bool = False,
-                        clabel: Optional[str] = None):
+                        clabel: Optional[str] = None,
+                        cax: Optional[plt.Axes] = None):
     """
     Quick-draw pcolormesh for any 2-D spectrogram.
 
@@ -208,7 +216,8 @@ def generic_spectrogram(t: np.ndarray,
                                cmap=cmap, title=title,
                                mask=mask, ax=ax,
                                return_axes=return_axes,
-                               show=show)
+                               show=show,
+                               cax=cax)
 
 
 # ----------------------------------------------------------------------
@@ -229,7 +238,7 @@ def _collapse_fpi(flux4d: np.ndarray,
     # Assume axis 0 is time
     cand = [ax for ax in axes[1:] if flux4d.shape[ax] == e_len]
     if not cand:
-        # fallback: assume axis=1 is energy
+        # Fallback: assume axis=1 is energy
         e_ax = 1
     else:
         e_ax = cand[0]
@@ -239,14 +248,84 @@ def _collapse_fpi(flux4d: np.ndarray,
         dat2d = flux4d.mean(axis=ang_axes)
     else:
         dat2d = flux4d.sum(axis=ang_axes)
-    # Ensure (time, energy) ordering
-    if e_ax == 3:
-        # result shape is (t, e) already after summing ang axes
+    # Ensure (time, energy) ordering; for the MMS FPI layouts we expect the
+    # collapsed array to already be (t, e), so no transpose is normally
+    # required. The checks below remain conservative in case new layouts
+    # appear in future products.
+    if e_ax in (1, 3):
         return dat2d
-    if e_ax == 1:
-        return dat2d
-    # If energy axis was 2 before summing (shouldn't happen), transpose accordingly
     return dat2d
+
+
+def estimate_dist_to_omni_scale(
+    flux4d: np.ndarray,
+    omni2d: np.ndarray,
+    *,
+    e_len: int,
+    collapse: Literal["sum", "mean"] = "sum",
+    min_samples: int = 128,
+) -> float:
+    """Estimate a scalar factor mapping 4-D FPI dists to omni energy-flux.
+
+    This helper collapses a raw 4-D FPI distribution to an omni-like
+    ``(time, energy)`` array using :func:`_collapse_fpi` and then compares it
+    to the official 2-D omni energy spectrum for the same interval. The
+    returned factor is the median ratio (in log-space) between the omni flux
+    and collapsed distribution wherever both are positive and finite.
+
+    Parameters
+    ----------
+    flux4d
+        Raw 4-D FPI distribution, shaped ``(time, *, *, *)``.
+    omni2d
+        Official omni-directional energy spectrum, shaped ``(time, energy)``.
+    e_len
+        Expected energy-channel count for the distribution (used to identify
+        the energy axis for :func:`_collapse_fpi`).
+    collapse
+        Aggregation used when collapsing angular dimensions (``"sum"`` or
+        ``"mean"``).
+    min_samples
+        Minimum number of valid ``(time, energy)`` samples required to compute
+        a robust ratio; if fewer are available the function returns ``1.0``.
+    """
+
+    dist2d = _collapse_fpi(np.asarray(flux4d), e_len=e_len, method=collapse)
+    dist2d = np.asarray(dist2d, float)
+    omni2d = np.asarray(omni2d, float)
+
+    if dist2d.ndim != 2 or omni2d.ndim != 2:
+        return 1.0
+
+    # Ensure shapes line up by trimming to the common time/energy extents.
+    nt = min(dist2d.shape[0], omni2d.shape[0])
+    ne = min(dist2d.shape[1], omni2d.shape[1])
+    if nt == 0 or ne == 0:
+        return 1.0
+
+    dist2d = dist2d[:nt, :ne]
+    omni2d = omni2d[:nt, :ne]
+
+    mask = (
+        np.isfinite(dist2d)
+        & np.isfinite(omni2d)
+        & (dist2d > 0)
+        & (omni2d > 0)
+    )
+    n_valid = int(mask.sum())
+    if n_valid < min_samples:
+        return 1.0
+
+    ratio = omni2d[mask] / dist2d[mask]
+    ratio = ratio[np.isfinite(ratio) & (ratio > 0)]
+    if ratio.size == 0:
+        return 1.0
+
+    # Work in log-space for robustness against outliers, then exponentiate the
+    # median back into linear space.
+    log10_ratio = np.log10(ratio)
+    med = float(np.nanmedian(log10_ratio))
+    return float(10.0 ** med)
 
 
 def fpi_ion_spectrogram(t: np.ndarray,

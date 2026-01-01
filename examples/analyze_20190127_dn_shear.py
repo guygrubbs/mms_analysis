@@ -380,20 +380,41 @@ def shear_and_xline(evt,lmn_map,BN,label):
             if tpos is None or pos is None:
                 continue
             posdf=to_df(tpos,pos,['X','Y','Z'])
-            if t0 in posdf.index:
-                pts.append(posdf.loc[t0,['X','Y','Z']].values); labels.append(f'MMS{p}')
+            if posdf.empty:
+                continue
+            # Use the ephemeris sample at or nearest to t0 so the formation
+            # is always populated when MEC data exist for the event window.
+            if t0 not in posdf.index:
+                idx = posdf.index.get_indexer([t0], method='nearest')
+                if not (idx.size and 0 <= idx[0] < len(posdf.index)):
+                    continue
+                t_use = posdf.index[idx[0]]
+            else:
+                t_use = t0
+            pts.append(posdf.loc[t_use,['X','Y','Z']].values); labels.append(f'MMS{p}')
         except Exception:
             continue
+    P=None
     if pts:
-        P=np.vstack(pts); ax.scatter(P[:,0],P[:,1],P[:,2], c=['C0','C1','C2','C3'][:len(P)])
-        for i,lab in enumerate(labels): ax.text(P[i,0],P[i,1],P[i,2],lab)
+        P=np.vstack(pts)
+        colors=['C0','C1','C2','C3'][:len(P)]
+        ax.scatter(P[:,0],P[:,1],P[:,2], c=colors, label='MMS spacecraft')
+        for i,lab in enumerate(labels):
+            ax.text(P[i,0],P[i,1],P[i,2],lab)
     if Ms:
         M_avg=np.mean(np.vstack(Ms),axis=0); M_avg/=np.linalg.norm(M_avg)
     else:
         M_avg=np.array([0.0,1.0,0.0])
-    o=P.mean(axis=0) if pts else np.zeros(3); L=3e3*M_avg
-    ax.quiver(o[0],o[1],o[2], L[0],L[1],L[2], color='k', linewidth=2)
-    ax.set_title(f'MMS formation & inferred X-line ({label})'); ax.set_xlabel('X_gsm km'); ax.set_ylabel('Y_gsm km'); ax.set_zlabel('Z_gsm km'); fig.tight_layout(); fig.savefig(EVENT_DIR/f'xline_3d_{label}.png',dpi=220); plt.close(fig)
+    o=P.mean(axis=0) if P is not None else np.zeros(3); L=3e3*M_avg
+    ax.quiver(o[0],o[1],o[2], L[0],L[1],L[2], color='k', linewidth=2, label='Inferred X-line')
+    ax.set_title(f'MMS formation & inferred X-line ({label})')
+    ax.set_xlabel('X_gsm km'); ax.set_ylabel('Y_gsm km'); ax.set_zlabel('Z_gsm km')
+    # Include a legend so viewers can distinguish spacecraft markers from the
+    # inferred X-line direction.
+    handles,leg_labels = ax.get_legend_handles_labels()
+    if handles:
+        ax.legend(handles, leg_labels, loc='best', frameon=False)
+    fig.tight_layout(); fig.savefig(EVENT_DIR/f'xline_3d_{label}.png',dpi=220); plt.close(fig)
     return shear_df
 
 # BN stacked visualization

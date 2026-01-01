@@ -227,3 +227,63 @@ def test_algorithmic_lmn_tangential_timing_alignment():
             f"L not aligned with timing_tan for probe {p}: angle={angle_deg:.2f} deg"
         )
         assert lm.meta.get("tangential_strategy").lower().startswith("timing")
+
+
+def test_algorithmic_lmn_single_spacecraft_basic():
+    """Single-spacecraft configuration should fall back to MVA+Shue blend.
+
+    In this synthetic test only one probe has valid inputs. The boundary
+    normal is along +X, the spacecraft is located on the +X axis, and the
+    magnetic field is predominantly tangential. The resulting N should align
+    reasonably with +X, the LMN triad must be orthonormal and right-handed,
+    and no timing-normal specific logic should be required.
+    """
+
+    np.random.seed(42)
+    n_true = np.array([1.0, 0.0, 0.0])
+    t0 = 1000.0
+
+    # Time axis and tangential magnetic field
+    t = np.linspace(t0 - 60.0, t0 + 60.0, 200)
+    By = 10.0 * np.sin(2 * np.pi * (t - t0) / 60.0)
+    Bz = 5.0 * np.cos(2 * np.pi * (t - t0) / 60.0)
+    Bx_noise = 0.1 * np.random.randn(t.size)
+    B = np.column_stack([Bx_noise, By, Bz])
+
+    probe = "1"
+    b_times = {probe: t}
+    b_gsm = {probe: B}
+    pos_times = {probe: np.array([t0])}
+    # Place spacecraft on +X axis so Shue normal roughly matches +X as well.
+    pos_gsm_km = {probe: np.array([[1000.0, 0.0, 0.0]])}
+    t_cross = {probe: t0}
+
+    lmn_map = coords.algorithmic_lmn(
+        b_times=b_times,
+        b_gsm=b_gsm,
+        pos_times=pos_times,
+        pos_gsm_km=pos_gsm_km,
+        t_cross=t_cross,
+        window_half_width_s=30.0,
+        # Use non-zero timing weight to verify it is silently ignored when
+        # timing normals are unavailable and MVA+Shue are renormalised.
+        normal_weights=(0.8, 0.15, 0.05),
+    )
+
+    assert set(lmn_map.keys()) == {probe}
+    lm = lmn_map[probe]
+
+    # N should align with the true normal (up to sign)
+    N_unit = lm.N / np.linalg.norm(lm.N)
+    cos_to_true = float(np.clip(np.abs(np.dot(N_unit, n_true)), -1.0, 1.0))
+    assert cos_to_true > 0.9, f"Single-spacecraft normal far from expected: cos={cos_to_true}"
+
+    # LMN must be orthonormal and right-handed
+    assert abs(np.dot(lm.L, lm.M)) < 1e-10
+    assert abs(np.dot(lm.L, lm.N)) < 1e-10
+    assert abs(np.dot(lm.M, lm.N)) < 1e-10
+    assert abs(np.linalg.norm(lm.L) - 1.0) < 1e-10
+    assert abs(np.linalg.norm(lm.M) - 1.0) < 1e-10
+    assert abs(np.linalg.norm(lm.N) - 1.0) < 1e-10
+    cross_LM = np.cross(lm.L, lm.M)
+    assert np.dot(cross_LM, lm.N) > 0.0

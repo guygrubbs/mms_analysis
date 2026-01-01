@@ -188,11 +188,48 @@ def _trim_to_match(time: np.ndarray, data: np.ndarray):
 
 
 def _tt2000_to_datetime64_ns(arr: np.ndarray) -> np.ndarray:
-    epoch2000 = np.datetime64('2000-01-01T12:00:00')
-    work = arr.astype('float64', copy=False)
+    """Convert numeric time arrays to ``datetime64[ns]``.
+
+    Historically this helper assumed **TT2000 nanoseconds since
+    2000-01-01T12:00:00**. In practice, pySPEDAS / pytplot more commonly
+    provide **Unix seconds since 1970-01-01T00:00:00** (as ``float64``)
+    for MMS variables such as FPI distributions.
+
+    To robustly handle both conventions we inspect the magnitude of the
+    finite values in *arr*:
+
+    - ``|t| < 1e10``  → interpret as **seconds since 1970-01-01**.
+      (1e10 seconds ≈ 317 years, safely above the Unix epoch range we
+      ever expect.)
+    - otherwise       → interpret as **nanoseconds since 2000-01-01T12:00:00**
+      (TT2000-style). Year-2019 TT2000 values are O(1e17), so they
+      clearly fall in this branch.
+    """
+
+    work = np.asarray(arr, dtype='float64')
+
+    # Mask obviously invalid entries.
     bad = ~np.isfinite(work) | (np.abs(work) > 9e30)
-    work[bad] = 0.0
-    out = epoch2000 + work.astype('int64', copy=False).astype('timedelta64[ns]')
+    if np.all(bad):
+        return np.full(work.shape, np.datetime64('NaT'), dtype='datetime64[ns]')
+
+    finite = work[~bad]
+    max_abs = float(np.nanmax(np.abs(finite)))
+
+    if max_abs < 1e10:
+        # Treat as Unix seconds since 1970-01-01T00:00:00.
+        origin = np.datetime64('1970-01-01T00:00:00')
+        scale = 1e9  # seconds → nanoseconds
+    else:
+        # Treat as TT2000-style nanoseconds since 2000-01-01T12:00:00.
+        origin = np.datetime64('2000-01-01T12:00:00')
+        scale = 1.0  # already in nanoseconds
+
+    ints = np.zeros_like(work, dtype='int64')
+    good = ~bad
+    ints[good] = np.round(work[good] * scale).astype('int64')
+
+    out = origin + ints.astype('timedelta64[ns]')
     out[bad] = np.datetime64('NaT')
     return out
 
@@ -791,34 +828,48 @@ def _first_omni_by_rate(base: str, rates: list[str]):
     base example: f"mms1_des" or f"mms3_dis".
     """
     import fnmatch as _fn
+
+    def _is_2d_spectrogram(var_name: str, require_many_bins: bool = False) -> bool:
+        """Heuristic check for a 2-D (time, energy) omni-type variable.
+
+        Uses pytplot.data_quants metadata only (no get_data calls) so it is
+        robust to pyspedas API changes where get_data may return more than two
+        values. We simply require ndim == 2 and, optionally, at least ~8 energy
+        bins to avoid mistaking tiny arrays for spectra.
+        """
+
+        qa = data_quants.get(var_name)
+        if qa is None:
+            return False
+        try:
+            ndim = getattr(qa, "ndim", None)
+            shape = getattr(qa, "shape", None)
+            if ndim != 2 or shape is None:
+                return False
+            if require_many_bins and shape[1] < 8:
+                return False
+            return True
+        except Exception:
+            return False
+
     # 1) Try explicit rate-suffixed names (most common)
-    for rate in rates:
+    for rate in (rates or []):
         for pat in [f"{base}_energyspectr_omni_{rate}*", f"{base}_energyspectr_{rate}_omni*"]:
             for v in _fn.filter(data_quants.keys(), pat):
-                try:
-                    t, d = get_data(v)
-                    if t is not None and d is not None and hasattr(d, 'ndim') and d.ndim == 2:
-                        return v
-                except Exception:
-                    continue
+                if _is_2d_spectrogram(v):
+                    return v
+
     # 2) Any omni without explicit rate
     for pat in [f"{base}_energyspectr_omni*", f"{base}*energyspectr*omni*"]:
         for v in _fn.filter(data_quants.keys(), pat):
-            try:
-                t, d = get_data(v)
-                if t is not None and d is not None and hasattr(d, 'ndim') and d.ndim == 2:
-                    return v
-            except Exception:
-                continue
+            if _is_2d_spectrogram(v):
+                return v
+
     # 3) Some datasets store omni as numberflux or differential_flux; accept any 2D spectra
     for pat in [f"{base}*omni*", f"{base}*flux*"]:
         for v in _fn.filter(data_quants.keys(), pat):
-            try:
-                t, d = get_data(v)
-                if t is not None and d is not None and hasattr(d, 'ndim') and d.ndim == 2 and d.shape[1] >= 8:
-                    return v
-            except Exception:
-                continue
+            if _is_2d_spectrogram(v, require_many_bins=True):
+                return v
     return None
 
 
@@ -1111,6 +1162,31 @@ def force_load_fpi_spectrogram(
                             continue
             if omni or flux4d or flux3d:
                 break
+
+    # Final safety net: if we know we've loaded distribution products but still
+    # don't have a 4-D flux variable, fall back to the canonical dist name.
+    #
+    # This specifically protects cases where _first_flux4d_by_rate() or the
+    # earlier fallback failed to latch onto e.g. ``mms1_dis_dist_fast`` or
+    # ``mms2_des_dist_fast`` even though the underlying DataArray is present
+    # and 4-D.  For standard MMS FPI L2 ``*-dist`` files these names are
+    # stable, so using them here is both safe and more robust across events.
+    if (source and 'dist' in str(source)) and flux4d is None:
+        for r_try in (rates or []):
+            cand = f"{base}_dist_{r_try}"
+            qa = data_quants.get(cand)
+            if qa is None or not hasattr(qa, 'ndim'):
+                continue
+            try:
+                if qa.ndim == 4:
+                    flux4d = cand
+                    if used_rate is None:
+                        used_rate = r_try
+                    if verbose:
+                        print(f"[force_spectr] Using canonical dist var as flux4d: {flux4d} (rate={used_rate})")
+                    break
+            except Exception:
+                continue
 
     if verbose:
         print(f"[force_spectr] MMS{probe} {species}: omni={bool(omni)} flux4d={bool(flux4d)} rate={used_rate} source={source}")

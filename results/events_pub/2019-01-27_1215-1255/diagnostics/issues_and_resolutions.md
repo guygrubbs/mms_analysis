@@ -173,7 +173,169 @@ Status codes used below:
   - The optimised `algorithmic_lmn` is a **physics-driven, CDF-only approximation** of the curated `.sav` LMN triads. For this event it nearly reproduces the `.sav` normals (≲10°) and BN time series (corr≳0.9997) without consuming `.sav` inputs at runtime.
   - Exact reproduction of `.sav` LMN is **not expected**, because the original triads reflect event-specific expert judgment (e.g. hand-tuned timing intervals and tangential alignment choices) that cannot be uniquely inferred from CDFs alone.
   - For other events, users should treat `(0.8, 0.15, 0.05)` and a 15–40 s window as **good starting points** for magnetopause crossings, and may adjust weights if timing geometry is poorly constrained (e.g. reducing `w_timing` when only one or two reliable crossings are available).
-- **Resolution status:** **FIXED / ENHANCED** – the algorithmic LMN method has been systematically optimised and validated for this event; its behaviour, parameter choices, and limitations are documented, and it meets or exceeds the requested accuracy targets while remaining generalisable to future events.
+  - **Resolution status:** **FIXED / ENHANCED** – the algorithmic LMN method has been systematically optimised and validated for this event; its behaviour, parameter choices, and limitations are documented, and it meets or exceeds the requested accuracy targets while remaining generalisable to future events.
+
+#### 2.4.1 Single-spacecraft extension
+
+The original implementation of `mms_mp.coords.algorithmic_lmn` required at least
+two probes and raised a `ValueError` for single-spacecraft inputs. The function
+has now been generalised so the same interface can be used for both multi- and
+single-spacecraft events:
+
+- Timing normals are only computed when two or more probes have valid
+  positions at their respective crossing times. In the single-spacecraft limit,
+  the timing term is automatically dropped from the blend.
+- Candidate normals (timing, MVA, Shue) are gathered based on availability and
+  their requested weights; the weights are renormalised so the remaining
+  components still form a convex combination.
+- The optional `tangential_strategy="timing"` is interpreted as a
+  position-offset-based tangential direction when a meaningful formation exists
+  (≥2 probes). For single-spacecraft or otherwise degenerate timing geometry it
+  cleanly falls back to a B-tangential direction (`"Bmean"`).
+
+Unit tests in `tests/test_algorithmic_lmn.py` now include a synthetic
+single-spacecraft scenario, verifying that the recovered normal remains aligned
+with the known truth and that the triad stays orthonormal and right-handed.
+
+#### 2.4.2 Regenerated visualisations using optimised algorithmic LMN
+
+Several key figures for the 2019-01-27 12:15–12:55 event have been regenerated
+using the optimised algorithmic LMN configuration
+(`normal_weights = (0.8, 0.15, 0.05)`, `tangential_strategy = "Bmean"`):
+
+- `examples/make_boundary_BLMN_20190127.py` now prefers algorithmic LMN when
+  rotating B into (B_L, B_M, B_N). If algorithmic LMN is unavailable for a
+  probe, the code falls back to the authoritative `.sav` triads and, as a last
+  resort, to the legacy `hybrid_lmn`.
+  - `examples/make_overview_20190127_algorithmic.py` produces per-probe overview
+    figures (`overview_mms[1-4].png`) combining B_L/B_M/B_N, ion (DIS)
+    spectrograms, and electron (DES) spectrograms. Spectrograms are now built
+    directly from local FPI distribution products via `pyspedas.mms.fpi`
+    (`dis-dist`/`des-dist`) and collapsed with `mms_mp.spectra._collapse_fpi`,
+    bypassing the brittle `force_load_all_plasma_spectrometers` metadata path.
+    All time axes are explicitly limited to the configured TRANGE
+    (default 2019-01-27 12:15–12:55 UT) and annotated with algorithmic
+    BN-based crossing times from `crossings_algorithmic.csv`.
+  - `examples/make_spectrograms_20190127_algorithmic.py` generates standalone
+    ion and electron spectrogram PNGs with filenames
+    `spectrogram_ion_mms[1-4].png` and `spectrogram_electron_mms[1-4].png`,
+    using the same pySPEDAS-backed distribution loader and algorithmic crossing
+    markers as the overview panels. Time axes are likewise clipped to the
+    event TRANGE. Where DES products are genuinely absent from the local cache
+    even after searching all available fast survey distributions, the script
+    writes explicit placeholder images documenting the data gap.
+  - `examples/make_orbits_20190127_algorithmic.py` produces a GSM X–Y
+    "string-of-pearls" orbit plot (`orbit_string_of_pearls_algorithmic.png`)
+    showing MMS1–4 trajectories in units of R_E with markers at the
+    algorithmic crossing locations and a nominal Shue (1997) magnetopause
+    cross-section for context.
+
+  All three plotting scripts above (overview, spectrograms, and orbits) have
+  been generalised to accept arbitrary events via CLI arguments
+  (`--start`, `--end`, `--probes`, `--event-dir`), while retaining default
+  values that exactly reproduce the 2019-01-27 12:15–12:55 event when run
+  without options.
+
+These visualisations provide a consistent, physics-driven view of the boundary
+structure that can be reproduced for future events without relying on
+event-specific `.sav` products.
+
+### 2.5 Blank Spectrograms from Misinterpreted Time Units
+
+- **Problem:** All ion and electron spectrogram PNGs for the 2019-01-27 event
+  (`spectrogram_ion_mms[1-4].png`, `spectrogram_electron_mms[1-4].png`, and the
+  spectrogram panels inside `overview_mms[1-4].png`) appeared essentially
+  blank (axes and colour bars present, but no meaningful structure), even
+  though the plotting scripts completed without errors.
+- **Initial symptoms and diagnostics:**
+  - Debug output from `_load_spectrogram_data` in
+    `examples/make_overview_20190127_algorithmic.py` showed that pySPEDAS
+    successfully loaded FPI distribution products such as
+    `mms1_dis_dist_fast` / `mms1_des_dist_fast` with realistic 4-D shapes
+    (e.g. `(533, 32, 16, 32)`) and that collapsed 2-D spectra had sensible
+    min/max ranges and low NaN fractions.
+  - However, when applying the event TRANGE mask
+    (2019-01-27 12:15–12:55 UT), the diagnostic logs reported
+    `insufficient samples in TRANGE` and `count=0` for many
+    (species, probe) combinations, with `t_range_total` values lying
+    near year 2000 rather than 2019.
+- **Root cause:**
+  - `pyspedas.get_data` returns FPI distribution and omni-spectra time
+    arrays as `float64` **Unix seconds since 1970-01-01T00:00:00** (values
+    of order ~1.5×10⁹ for this event).
+  - The shared time-conversion helper `mms_mp.data_loader._tt2000_to_datetime64_ns`
+    historically assumed that *all* numeric inputs were TT2000 nanoseconds
+    since 2000-01-01T12:00:00. Interpreting ~1.5×10⁹ as nanoseconds places
+    the resulting `datetime64` values close to 2000-01-01T12:00:01, not in
+    2019.
+  - As a result, FPI spectrogram time axes were silently shifted to around
+    year 2000, and the intersection with the 2019-01-27 12:15–12:55 TRANGE
+    was empty. The TRANGE mask removed all rows, leaving no data to plot
+    and producing blank spectrogram panels.
+- **Fix (time conversion):**
+  - `_tt2000_to_datetime64_ns` was rewritten to be **epoch-aware** by
+    inspecting the magnitude of finite numeric time values:
+    - If `max(|t|) < 1e10`, the values are treated as **Unix seconds since
+      1970-01-01T00:00:00** and converted with a 1e9 scale factor
+      (seconds → nanoseconds).
+    - Otherwise, values are treated as **nanoseconds since
+      2000-01-01T12:00:00** (TT2000-like) and converted with a scale factor
+      of 1.
+  - This preserves compatibility with genuine TT2000 arrays while
+    correctly handling the Unix-second arrays returned by pySPEDAS for FPI
+    distributions and omni spectra.
+- **Fix (spectrogram loader robustness and coverage):**
+  - `_load_spectrogram_data` in
+    `examples/make_overview_20190127_algorithmic.py` was further hardened
+    so that, for each `(species, probe)` pair, it:
+    - **Prefers** true 4-D FPI distributions (`*_dis_dist_*`,
+      `*_des_dist_*`) when available and collapses them to 2-D using
+      `mms_mp.spectra._collapse_fpi`.
+    - **Falls back** to real 2-D omni-directional FPI energy spectra
+      (`*_energyspectr_omni_*`) when suitable 4-D distributions are not
+      present in the local cache, still honouring strict local caching
+      (no re-downloads).
+    - Logs, for each successful load, the raw and collapsed shapes,
+      NaN fractions, and the resulting time range before and after applying
+      the TRANGE mask.
+  - The standalone spectrogram script
+    `examples/make_spectrograms_20190127_algorithmic.py` reuses this
+    loader, so the improved time handling and omni fallback automatically
+    apply to both the standalone PNGs and the overview panels.
+- **Post-fix behaviour and verification:**
+  - After the new epoch-aware `_tt2000_to_datetime64_ns` was introduced,
+    debug logs show FPI DIS/DES spectrogram times correctly spanning
+    2019-01-27 12:15–12:55 for MMS1–4, with non-zero sample counts inside
+    the TRANGE.
+  - Standalone spectrogram commands now generate non-blank PNGs for all
+    requested products:
+    - Ion (DIS) spectrograms: `spectrogram_ion_mms[1-4].png`.
+    - Electron (DES) spectrograms: `spectrogram_electron_mms[1-3].png`
+      are robust; MMS4 DES either produces a visibly gappy spectrogram (as
+      dictated by the underlying data) or, if the local cache lacks usable
+      DES products, a clearly labelled placeholder image documenting the
+      data gap.
+  - Overview figures `overview_mms[1-4].png` now show populated ion and
+    electron spectrogram panels with time axes explicitly limited to the
+	    12:15–12:55 UT window, consistent with the BN and orbit panels.
+	  - A subtle pySPEDAS/pytplot initialisation quirk was identified for the
+	    DES MMS4 distribution: in a fresh process the *first* call to the shared
+	    `_load_spectrogram_data` helper sometimes leaves `mms4_des_*` variables
+	    absent from `pytplot.data_quants`, while a second call in the same
+	    process reliably exposes `mms4_des_dist_fast` and `mms4_des_energy_fast`.
+	    To keep the **overview** behaviour consistent with the standalone
+	    spectrogram script (which does succeed in plotting DES MMS4 from real
+	    FPI distributions), `examples/make_overview_20190127_algorithmic.py`
+	    now calls `_load_spectrogram_data` twice and merges the per-species
+	    dictionaries. This is a lightweight, cache-respecting workaround that
+	    ensures `overview_mms4.png` includes a DES panel built from genuine
+	    `mms4_des_dist_fast` data (with NaN fractions and gaps reflecting the
+	    underlying instrument coverage) rather than a placeholder.
+- **Resolution status:** **FIXED** – The root cause of blank spectrograms
+  (misinterpreted time units) has been corrected in `mms_mp.data_loader`,
+  the spectrogram loader has been made more robust via distribution/omni
+  fallbacks, and the corrected behaviour has been verified via diagnostics
+  and regenerated figures for the 2019-01-27 event.
 
 
 ## 3. Acceptable Limitations

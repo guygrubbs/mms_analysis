@@ -37,19 +37,46 @@ except Exception:
 
 
 def _load_event():
-    return mp.load_event(list(TRANGE), probes=list(PROBES), include_ephem=True,
-                         data_rate_fgm='srvy', data_rate_fpi='fast')
+	    # HPCA is not required for these magnetic-only figures; disable it to
+	    # avoid failing when He+ moments are unavailable or cannot be
+	    # reconstructed for this interval.
+	    return mp.load_event(
+	        list(TRANGE),
+	        probes=list(PROBES),
+	        include_ephem=True,
+	        include_hpca=False,
+	        data_rate_fgm='srvy',
+	        data_rate_fpi='fast',
+	    )
 
 
-def _rotate_B_to_LMN(B_df: pd.DataFrame, probe: str, pos_mid: np.ndarray|None=None):
-    # Choose LMN triad: prefer .sav; fallback to hybrid_lmn using B-window & position
-    if probe in _LMN_PER_PROBE:
-        L = np.asarray(_LMN_PER_PROBE[probe]['L'], float)
-        M = np.asarray(_LMN_PER_PROBE[probe]['M'], float)
-        N = np.asarray(_LMN_PER_PROBE[probe]['N'], float)
+def _rotate_B_to_LMN(B_df: pd.DataFrame,
+                     probe: str,
+                     pos_mid: np.ndarray | None = None,
+                     lmn_map: dict | None = None):
+    """Rotate GSM B into LMN for one probe.
+
+    Priority of LMN sources:
+    1. Physics-driven *algorithmic* LMN (if provided via ``lmn_map``).
+    2. Authoritative .sav LMN for this event.
+    3. Legacy ``hybrid_lmn`` using a local B-window + midpoint position.
+    """
+
+    if lmn_map is not None and probe in lmn_map:
+        entry = lmn_map[probe]
+        L = np.asarray(entry['L'], float)
+        M = np.asarray(entry['M'], float)
+        N = np.asarray(entry['N'], float)
+    elif probe in _LMN_PER_PROBE:
+        entry = _LMN_PER_PROBE[probe]
+        L = np.asarray(entry['L'], float)
+        M = np.asarray(entry['M'], float)
+        N = np.asarray(entry['N'], float)
     else:
-        mid = len(B_df)//2
-        i0 = max(0, mid-200); i1 = min(len(B_df), mid+200)
+        # Fallback: legacy hybrid_lmn (diagnostic only)
+        mid = len(B_df) // 2
+        i0 = max(0, mid - 200)
+        i1 = min(len(B_df), mid + 200)
         B_win = B_df.iloc[i0:i1].values
         lmn = mp.coords.hybrid_lmn(B_win, pos_gsm_km=pos_mid, eig_ratio_thresh=2.0)
         L, M, N = lmn.L, lmn.M, lmn.N
@@ -101,13 +128,18 @@ def _per_probe_plot(probe: str, B_df: pd.DataFrame, BL: pd.Series, BM: pd.Series
     ax.plot(BN.index, BN.values, lw=1.3, color='k', label='B_N')
     ax.set_ylabel('B (nT) in LMN')
     ax.grid(True, alpha=0.25)
-    # Shade vt intervals if provided
+    # Shade vt intervals if provided.  Use *naive* UTC timestamps to stay
+    # consistent with the DatetimeIndex produced by ``data_loader.to_dataframe``.
+    # Mixing tz-aware (UTC) and naive timestamps on the same axis can cause the
+    # B_LMN curves to fall outside the visible x-limits even though the data are
+    # present, which is what manifested in the "overlay-only" boundary plots.
     if vt and probe in vt:
         for (t0s, t1s) in vt[probe]:
-            t0 = pd.to_datetime(t0s, utc=True)
-            t1 = pd.to_datetime(t1s, utc=True)
-            if t1 < t0: t0, t1 = t1, t0
-            ax.axvspan(t0, t1, color='k', alpha=0.05)
+            t0 = pd.to_datetime(t0s)  # naive UTC
+            t1 = pd.to_datetime(t1s)
+            if t1 < t0:
+                t0, t1 = t1, t0
+            ax.axvspan(t0, t1, color="k", alpha=0.05)
     # Mark crossing start/end and annotate positions
     annotations = []
     for typ, i1, i2 in layers or []:
@@ -120,6 +152,12 @@ def _per_probe_plot(probe: str, B_df: pd.DataFrame, BL: pd.Series, BM: pd.Series
                 pos = _position_at(t_cross.to_datetime64(), pos_t, pos_xyz)
                 annotations.append({'probe': probe, 'type': typ, 'time': t_cross.isoformat(),
                                     'X_km': float(pos[0]), 'Y_km': float(pos[1]), 'Z_km': float(pos[2])})
+    # Enforce the canonical TRANGE on the time axis using the same helper as
+    # the overview script, which returns ``datetime64[ns]`` (naive UTC).
+    t0, t1 = mp.data_loader._parse_trange(list(TRANGE))
+    t0 = t0.astype("datetime64[ns]")
+    t1 = t1.astype("datetime64[ns]")
+    ax.set_xlim(t0, t1)
     ax.legend(loc='upper right', frameon=False)
     ax.set_title(f'MMS{probe} Magnetic Field (LMN) — Boundary Crossings')
     fig.autofmt_xdate()
@@ -136,14 +174,21 @@ def _combined_bn_plot(BN_map: dict, vt: dict, crossings_per_probe: dict):
         key = str(p)
         ax = axes[i]
         bn = BN_map.get(key)
-        if bn is None: continue
-        ax.plot(bn.index, bn.values, lw=1.1, color='k', label='B_N')
+        if bn is None:
+            continue
+
+        # B_N is indexed by a naive ``DatetimeIndex``; keep all other time
+        # annotations naive as well so Matplotlib does not silently shift the
+        # axis and hide the field curves outside the visible window.
+        ax.plot(bn.index, bn.values, lw=1.1, color="k", label="B_N")
+
         if vt and key in vt:
             for (t0s, t1s) in vt[key]:
-                t0 = pd.to_datetime(t0s, utc=True)
-                t1 = pd.to_datetime(t1s, utc=True)
-                if t1 < t0: t0, t1 = t1, t0
-                ax.axvspan(t0, t1, color='k', alpha=0.05)
+                t0 = pd.to_datetime(t0s)  # naive UTC
+                t1 = pd.to_datetime(t1s)
+                if t1 < t0:
+                    t0, t1 = t1, t0
+                ax.axvspan(t0, t1, color="k", alpha=0.05)
         # Crossing markers
         for typ, i1, i2 in (crossings_per_probe.get(key) or []):
             for idx in [i1, i2]:
@@ -156,7 +201,14 @@ def _combined_bn_plot(BN_map: dict, vt: dict, crossings_per_probe: dict):
         ax.grid(True, alpha=0.2)
         if i == 0:
             ax.legend(loc='upper right', frameon=False)
-    axes[-1].set_xlabel('Time (UTC)')
+    axes[-1].set_xlabel("Time (UTC)")
+
+    # Apply a shared x-limit corresponding to the event TRANGE, again using
+    # the same helper as the overview script for consistent naive UTC times.
+    t0, t1 = mp.data_loader._parse_trange(list(TRANGE))
+    t0 = t0.astype("datetime64[ns]")
+    t1 = t1.astype("datetime64[ns]")
+    axes[-1].set_xlim(t0, t1)
     fig.suptitle('Boundary Crossing Overview — B_N (LMN), MMS1–4')
     fig.autofmt_xdate()
     fig.tight_layout(rect=[0,0,1,0.96])
@@ -195,6 +247,20 @@ def main():
     BN_map = {}
     crossings_per_probe = {}
 
+    # Prefer the optimised physics-driven algorithmic LMN for this event.
+    try:
+        from examples.analyze_20190127_dn_shear import _build_algorithmic_lmn_map
+
+        lmn_alg_map = _build_algorithmic_lmn_map(evt, window_half_width_s=30.0)
+        print("[boundary_BLMN] Using algorithmic LMN for B_LMN rotation.")
+    except Exception as exc:  # pragma: no cover - defensive fallback
+        print(
+            "[boundary_BLMN] Warning: algorithmic LMN unavailable; "
+            "falling back to .sav / hybrid LMN:",
+            exc,
+        )
+        lmn_alg_map = None
+
     for p in PROBES:
         key = str(p)
         # Build B_df and POS
@@ -207,8 +273,8 @@ def main():
         pos_df = mp.data_loader.to_dataframe(tpos, pos, cols=['X','Y','Z'])
 
         # Rotate B → LMN
-        pos_mid = pos_df.iloc[len(pos_df)//2].values if len(pos_df) else None
-        BL, BM, BN = _rotate_B_to_LMN(B_df, key, pos_mid)
+        pos_mid = pos_df.iloc[len(pos_df) // 2].values if len(pos_df) else None
+        BL, BM, BN = _rotate_B_to_LMN(B_df, key, pos_mid, lmn_alg_map)
         BN_map[key] = BN
 
         # Crossings

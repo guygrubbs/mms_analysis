@@ -3,6 +3,14 @@
 - Strict local caching: all inputs loaded from local CDFs only (no re-downloads).
 - DN integration uses the same cold-ion windowing as published all_1243 outputs.
 
+## LMN methods summary (.sav vs hybrid vs algorithmic)
+
+| Method          | N-angle vs .sav (deg, MMS1–4) | BN corr vs .sav (MMS1–4) | BN RMSE vs .sav (nT, MMS1–4) | Notes                                  |
+|-----------------|-------------------------------|---------------------------|------------------------------|----------------------------------------|
+| .sav (reference)| 0                             | 1.00                      | 0                            | Expert-curated LMN from original study |
+| hybrid_lmn      | ≈89–90                        | ≈0.80                     | ≳1200                        | N rotated/flipped; not recommended     |
+| algorithmic_lmn | ≈6–8                          | 1.00                      | ≈60–70                       | Small rotation; good quantitative match|
+
 ## BN differences vs .sav LMN (hybrid and algorithmic)
 ### Source: algorithmic
 - MMS1: MAE=11.578 nT, RMSE=67.772 nT, corr=1.000, count(|Δ|>0.5 nT)=25795, N-angle diff≈5.6°

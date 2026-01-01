@@ -417,7 +417,7 @@ def _resolve_thresholds(user_thresh: Optional[Union[float, Tuple[float, float]]]
 
 
 # =========================================================================== #
-#     Physics-driven multi-spacecraft LMN builder (MVA + timing + Shue)       #
+#   Physics-driven LMN builder (MVA + timing + Shue, multi- and single-SC)   #
 # =========================================================================== #
 def algorithmic_lmn(
     b_times: Mapping[str, np.ndarray],
@@ -435,15 +435,19 @@ def algorithmic_lmn(
 ) -> Dict[str, LMN]:
     """Build LMN triads from CDF data using MVA + timing + Shue constraints.
 
-    This function is intended as a **general, physics-driven LMN constructor**
-    for magnetopause boundary analysis. It combines three independent sources
-    of information about the boundary normal:
+	    This function is intended as a **general, physics-driven LMN constructor**
+	    for magnetopause boundary analysis. It supports both multi-spacecraft and
+	    single-spacecraft configurations and combines three independent sources of
+	    information about the boundary normal where available:
 
     1. Single-spacecraft MVA performed over a window around each probe's
        boundary crossing time ``t_cross``.
-    2. Multi-spacecraft timing normal from :func:`mms_mp.multispacecraft.timing_normal`.
-    3. Shue (1997) magnetopause model normal evaluated near the formation
-       centre as a weak prior.
+	    2. Multi-spacecraft timing normal from :func:`mms_mp.multispacecraft.timing_normal`
+	       when at least two probes with valid positions and crossing times are
+	       available.
+	    3. Shue (1997) magnetopause model normal evaluated near the formation
+	       centre (or, in the single-spacecraft limit, at the spacecraft position)
+	       as a weak prior.
 
     The three normals are blended with configurable weights and then used as a
     *shared* N direction for all probes. Tangential directions L and M are
@@ -484,18 +488,22 @@ def algorithmic_lmn(
           plane.
         * ``"MVA"``: use the MVA L direction as the initial tangential vector.
 
-    normal_weights : (w_timing, w_mva, w_shue), optional
-        Relative weights used when blending the timing, mean-MVA, and Shue
-        normals. Only components that are successfully computed are included
-        in the blend; their weights are re-normalised to sum to 1.
-        
-        For well-resolved multi-spacecraft magnetopause crossings, values in
-        the vicinity of ``(0.7–0.85, 0.1–0.25, 0.0–0.1)`` are typically
-        appropriate, with the default ``(0.8, 0.15, 0.05)`` chosen based on a
-        detailed optimisation for the 2019-01-27 12:43 UT event. For poorly
-        constrained timing geometries (effectively single-spacecraft events),
-        callers may set ``w_timing=0.0`` to rely more heavily on MVA and Shue
-        normals.
+	    normal_weights : (w_timing, w_mva, w_shue), optional
+	        Relative weights used when blending the timing, mean-MVA, and Shue
+	        normals. Only components that are successfully computed are included
+	        in the blend; their weights are re-normalised to sum to 1.
+	        
+	        For well-resolved multi-spacecraft magnetopause crossings, values in
+	        the vicinity of ``(0.7–0.85, 0.1–0.25, 0.0–0.1)`` are typically
+	        appropriate, with the default ``(0.8, 0.15, 0.05)`` chosen based on a
+	        detailed optimisation for the 2019-01-27 12:43 UT event.
+	        
+	        In the **single-spacecraft limit** (only one probe with valid B, POS
+	        and ``t_cross``), no timing normal is available. In that case only the
+	        MVA and Shue components participate in the blend and their weights are
+	        re-normalised accordingly (e.g. ``(0.8, 0.15, 0.05)`` becomes an
+	        effective ``(0.75, 0.25)`` weighting between MVA and Shue). Callers may
+	        also choose ``w_timing=0.0`` explicitly for such cases.
 
     enforce_outward_normal : bool, optional
         If True (default), flip the final N so that it points roughly outward
@@ -514,8 +522,13 @@ def algorithmic_lmn(
       requires CDF-derived B and ephemeris plus caller-supplied crossing times.
     * Callers are responsible for choosing ``t_cross`` and
       ``window_half_width_s`` appropriate to their event and boundary type.
-    * For events with poor timing geometry (e.g. effectively single-spacecraft
-      crossings), the result will be dominated by the MVA and/or Shue normals.
+	    * For events with poor timing geometry (e.g. effectively single-spacecraft
+	      crossings), the result will be dominated by the MVA and/or Shue normals;
+	      the timing component is automatically omitted from the blend.
+	    * When ``tangential_strategy='timing'`` is requested but no meaningful
+	      multi-spacecraft geometry exists (single-spacecraft case, or degenerate
+	      position offsets), the seed tangential direction gracefully falls back
+	      to the mean B direction in the MVA window (``"Bmean"`` strategy).
     """
 
     # Helper: extract a window around t_center, expanding if necessary.
@@ -550,9 +563,9 @@ def algorithmic_lmn(
         for p in t_cross.keys()
         if p in b_times and p in b_gsm and p in pos_times and p in pos_gsm_km
     )
-    if len(probes) < 2:
+    if len(probes) == 0:
         raise ValueError(
-            "algorithmic_lmn requires >=2 probes with B_gsm, POS_gsm, and t_cross."
+            "algorithmic_lmn requires at least one probe with B_gsm, POS_gsm, and t_cross."
         )
 
     # Per-probe MVA and mean-B / mean-Vi estimates
@@ -601,12 +614,13 @@ def algorithmic_lmn(
         j = int(np.argmin(np.abs(tpos - t_c)))
         pos_at_cross[p] = pos[j, :3]
 
-    if len(pos_at_cross) < 2:
+    if len(pos_at_cross) == 0:
         raise ValueError(
-            "algorithmic_lmn requires >=2 probes with position samples near t_cross."
+            "algorithmic_lmn requires at least one probe with position samples near t_cross."
         )
 
-    # Multi-spacecraft timing normal
+    # Multi-spacecraft timing normal (only defined when we have >= 2 probes
+    # with valid positions/crossing times).
     from .multispacecraft import timing_normal  # local import to avoid cycles
 
     pos_for_timing = {p: pos_at_cross[p] for p in probes if p in pos_at_cross}
@@ -616,14 +630,15 @@ def algorithmic_lmn(
     n_timing = None
     V_phase = np.nan
     sigma_V = np.nan
-    try:
-        n_timing, V_phase, sigma_V, _diag = timing_normal(
-            pos_for_timing, t_for_timing, return_diagnostics=True
-        )
-        if not np.all(np.isfinite(n_timing)):
+    if len(pos_for_timing) >= 2:
+        try:
+            n_timing, V_phase, sigma_V, _diag = timing_normal(
+                pos_for_timing, t_for_timing, return_diagnostics=True
+            )
+            if not np.all(np.isfinite(n_timing)):
+                n_timing = None
+        except Exception:
             n_timing = None
-    except Exception:
-        n_timing = None
 
     # Mean MVA normal across probes
     N_mva_mean: Optional[np.ndarray] = None
@@ -681,7 +696,9 @@ def algorithmic_lmn(
     else:
         N_final = N_vec / n_norm
 
-    # Enforce outward-pointing normal (approximate dayside convention)
+    # Enforce outward-pointing normal (approximate dayside convention). For a
+    # single-spacecraft configuration this reduces to using that probe's
+    # position as the radial reference.
     if enforce_outward_normal and pos_for_timing:
         if center is None:
             center = np.vstack(list(pos_for_timing.values())).mean(axis=0)
@@ -715,15 +732,20 @@ def algorithmic_lmn(
             vt = v - np.dot(v, N_final) * N_final
             if np.linalg.norm(vt) > 1e-6:
                 L0 = vt
-        elif (
-            tangential_strategy_norm in {"timing", "pos", "position"}
-            and p in pos_at_cross
-            and center is not None
-        ):
-            delta = pos_at_cross[p] - center
-            dt = delta - np.dot(delta, N_final) * N_final
-            if np.linalg.norm(dt) > 1e-6:
-                L0 = dt
+        elif tangential_strategy_norm in {"timing", "pos", "position"}:
+            # For genuine multi-spacecraft configurations use the position
+            # offset from the formation centre. In the single-spacecraft limit
+            # (or if geometry is degenerate), fall back to a B-mean based
+            # tangential direction so that 'timing' remains usable.
+            if p in pos_at_cross and center is not None and len(pos_for_timing) >= 2:
+                delta = pos_at_cross[p] - center
+                dt = delta - np.dot(delta, N_final) * N_final
+                if np.linalg.norm(dt) > 1e-6:
+                    L0 = dt
+            if L0 is None:
+                bt = B_mean - np.dot(B_mean, N_final) * N_final
+                if np.linalg.norm(bt) > 1e-6:
+                    L0 = bt
 
         if L0 is None:
             L0 = lm.L
