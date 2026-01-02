@@ -13,8 +13,18 @@ from datetime import datetime
 import numpy as np
 import pandas as pd
 
+# NumPy ≥ 2.0 removed the ``np.bool8`` alias that older libraries (e.g. bokeh 2.x
+# used by pytplot) still reference. Provide a lightweight compatibility alias so
+# those imports succeed without forcing a global NumPy downgrade.
+if not hasattr(np, "bool8"):  # pragma: no cover - environment/NumPy dependent
+    np.bool8 = np.bool_
+
 from pyspedas.projects import mms
 from pyspedas import get_data
+try:  # pySPEDAS provides tnames() for listing loaded tplot variables
+    from pyspedas import tnames as _tnames
+except Exception:  # pragma: no cover - older pySPEDAS versions
+    _tnames = None
 from pytplot import data_quants
 
 # ═════════════════════════════ helpers ════════════════════════════════════
@@ -157,15 +167,37 @@ def _is_valid(varname: str, expect_cols: Optional[int] = None) -> bool:
 
 
 def _first_valid_var(patterns: List[str], expect_cols: Optional[int] = None):
-    for pat in patterns:
-        if _is_valid(pat, expect_cols):
-            return pat
-        if pat in data_quants and _is_valid(pat, expect_cols):
-            return pat
-        for hit in fnmatch.filter(data_quants.keys(), pat):
-            if _is_valid(hit, expect_cols):
-                return hit
-    return None
+	    """Return the first pySPEDAS/tplot variable matching *patterns*.
+
+	    Historically this helper searched ``pytplot.data_quants``, but recent
+	    pySPEDAS versions primarily expose loaded variables via
+	    :func:`pyspedas.tnames`. In some environments ``data_quants`` can be
+	    empty even though ``get_data`` and ``tnames`` work correctly.
+
+	    To be robust we prefer ``tnames()`` when available and fall back to
+	    ``data_quants.keys()`` otherwise.
+	    """
+
+	    # Discover the universe of candidate names once.
+	    names: List[str] = []
+	    if _tnames is not None:
+	        try:
+	            names = list(_tnames())
+	        except Exception:  # pragma: no cover - defensive
+	            names = []
+	    if not names:
+	        names = list(data_quants.keys())
+
+	    for pat in patterns:
+	        # First allow an exact/wildcard call directly into get_data – this
+	        # supports callers that already pass a fully qualified name.
+	        if _is_valid(pat, expect_cols):
+	            return pat
+	        # Then search known tplot variable names using fnmatch patterns.
+	        for hit in fnmatch.filter(names, pat):
+	            if _is_valid(hit, expect_cols):
+	                return hit
+	    return None
 
 
 # Prefer variables by rate order, e.g., try '*_brst*' then '*_fast*' then '*_srvy*'
@@ -517,18 +549,55 @@ def load_event(
         key = f'mms{p}'
 
         # --- Magnetic field (required) -----------------------------------
-        B_var = _first_valid_var([f'{key}_fgm_b_gsm_*'], expect_cols=3)
+        # Modern MMS FGM files provide several B vectors, e.g.::
+        #
+        #   mms1_fgm_b_gsm_srvy_l2
+        #   mms1_fgm_b_gsm_srvy_l2_bvec   (3 components)
+        #   mms1_fgm_b_gse_srvy_l2[,_bvec]
+        #
+        # with the exact rate (``srvy``, ``fast``, ``brst``) depending on the
+        # requested cadence. PySPEDAS reliably populates these names even if
+        # ``pytplot.data_quants`` is empty, so we first try explicit
+        # coordinate/rate-based candidates using ``get_data`` and only fall
+        # back to the older wildcard search helper if needed.
+        used_rate = meta['download_summary']['fgm'].get('used_rate')
+        B_var = None
+        if used_rate:
+            rate = used_rate
+            candidates = [
+                f'{key}_fgm_b_gsm_{rate}_l2_bvec',
+                f'{key}_fgm_b_gsm_{rate}_l2',
+                f'{key}_fgm_b_gse_{rate}_l2_bvec',
+                f'{key}_fgm_b_gse_{rate}_l2',
+            ]
+            for cand in candidates:
+                try:
+                    t_test, d_test = get_data(cand)
+                except Exception:
+                    continue
+                if t_test is not None and d_test is not None and len(t_test) > 0:
+                    B_var = cand
+                    break
+
+        # Legacy wildcard-based discovery as a secondary fallback, to remain
+        # compatible with environments that still populate data_quants.
         if B_var is None:
-            B_var = _first_valid_var([f'{key}_fgm_b_gsm_*'])
-        if B_var is None:
-            B_var = _first_valid_var([f'{key}_fgm_b_gse_*'], expect_cols=3)
+            B_var = _first_valid_var([f'{key}_fgm_b_gsm_*'], expect_cols=3)
             if B_var is None:
-                B_var = _first_valid_var([f'{key}_fgm_b_gse_*'])
+                B_var = _first_valid_var([f'{key}_fgm_b_gsm_*'])
+            if B_var is None:
+                B_var = _first_valid_var([f'{key}_fgm_b_gse_*'], expect_cols=3)
+                if B_var is None:
+                    B_var = _first_valid_var([f'{key}_fgm_b_gse_*'])
+
         if B_var is None:
             raise RuntimeError(f'MMS{p}: magnetic field data unavailable for requested interval {trange}')
 
         tB, dB = _tp(B_var)
         if dB.ndim == 2 and dB.shape[1] >= 3:
+            # For variables like ``*_b_gsm_srvy_l2`` that contain 4 columns
+            # (Bx, By, Bz, |B|), discard the magnitude column and keep the
+            # vector components only.
             dB = dB[:, :3]
         evt[p]['B_gsm'] = _trim_to_match(tB, dB)
         meta['sources'][p]['B_gsm'] = B_var

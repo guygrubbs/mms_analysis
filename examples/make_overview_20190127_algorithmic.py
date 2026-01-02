@@ -132,7 +132,18 @@ def _build_algorithmic_lmn_map(evt, window_half_width_s: float = 30.0) -> Dict[s
         pos_times[p] = np.asarray(tpos)
         pos_vals[p] = np.asarray(pos)
 
-    # Crossing times approximated from the curated event analysis
+    # Crossing times approximated from the curated event analysis.
+    #
+    # ``coords.algorithmic_lmn`` expects ``t_cross`` in **epoch seconds**
+    # (float).  The original implementation here passed ``numpy.datetime64``
+    # objects directly, which are interpreted as nanoseconds since 1970 when
+    # cast to ``float``.  That mismatch (seconds vs. nanoseconds) caused the
+    # MVA windows to expand to the full interval and subtly distorted the
+    # blended normal, yielding an N direction nearly **tangential** to the
+    # Shue model normal for this event.
+    #
+    # To avoid this 1e9 scaling error we explicitly convert the curated UTC
+    # times to epoch seconds before calling ``algorithmic_lmn``.
     t_cross_utc = {
         "1": "2019-01-27T12:43:25",
         "2": "2019-01-27T12:43:26",
@@ -140,9 +151,13 @@ def _build_algorithmic_lmn_map(evt, window_half_width_s: float = 30.0) -> Dict[s
         "4": "2019-01-27T12:43:26",
     }
 
-    t_cross = {
-        p: np.datetime64(ts.replace("/", "T"), "ns") for p, ts in t_cross_utc.items()
-    }
+    epoch = np.datetime64("1970-01-01T00:00:00", "ns")
+    t_cross: Dict[str, float] = {}
+    for p, ts in t_cross_utc.items():
+        dt64 = np.datetime64(ts.replace("/", "T"), "ns")
+        dt = dt64 - epoch
+        # Convert ``timedelta64[ns]`` → float seconds
+        t_cross[p] = dt / np.timedelta64(1, "s")
 
     lmn_per_probe = algorithmic_lmn(
         b_times=b_times,

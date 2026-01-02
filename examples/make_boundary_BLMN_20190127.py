@@ -133,22 +133,41 @@ def _per_probe_plot(probe: str, B_df: pd.DataFrame, BL: pd.Series, BM: pd.Series
     # Mixing tz-aware (UTC) and naive timestamps on the same axis can cause the
     # B_LMN curves to fall outside the visible x-limits even though the data are
     # present, which is what manifested in the "overlay-only" boundary plots.
+    vt_labeled = False
     if vt and probe in vt:
         for (t0s, t1s) in vt[probe]:
             t0 = pd.to_datetime(t0s)  # naive UTC
             t1 = pd.to_datetime(t1s)
             if t1 < t0:
                 t0, t1 = t1, t0
-            ax.axvspan(t0, t1, color="k", alpha=0.05)
-    # Mark crossing start/end and annotate positions
+            label = 'VT intervals' if not vt_labeled else None
+            ax.axvspan(t0, t1, color="k", alpha=0.05, label=label)
+            if label is not None:
+                vt_labeled = True
+
+    # Mark crossing start/end and annotate positions.  Use distinct legend
+    # entries for magnetosphere-side vs magnetosheath/other crossings, without
+    # duplicating entries when multiple crossings exist.
     annotations = []
+    mag_labeled = False
+    sheath_labeled = False
     for typ, i1, i2 in layers or []:
         for idx in [i1, i2]:
-            if idx is None: continue
+            if idx is None:
+                continue
             idx = int(idx)
             if 0 <= idx < len(BN):
                 t_cross = BN.index[idx]
-                ax.axvline(t_cross, color='r' if typ=='magnetosphere' else 'g', ls='--', lw=1.0, alpha=0.7)
+                if typ == 'magnetosphere':
+                    label = 'Magnetosphere-side crossing' if not mag_labeled else None
+                    ax.axvline(t_cross, color='r', ls='--', lw=1.0, alpha=0.7, label=label)
+                    if label is not None:
+                        mag_labeled = True
+                else:
+                    label = 'Magnetosheath/other crossing' if not sheath_labeled else None
+                    ax.axvline(t_cross, color='g', ls='--', lw=1.0, alpha=0.7, label=label)
+                    if label is not None:
+                        sheath_labeled = True
                 pos = _position_at(t_cross.to_datetime64(), pos_t, pos_xyz)
                 annotations.append({'probe': probe, 'type': typ, 'time': t_cross.isoformat(),
                                     'X_km': float(pos[0]), 'Y_km': float(pos[1]), 'Z_km': float(pos[2])})
@@ -170,6 +189,11 @@ def _per_probe_plot(probe: str, B_df: pd.DataFrame, BL: pd.Series, BM: pd.Series
 
 def _combined_bn_plot(BN_map: dict, vt: dict, crossings_per_probe: dict):
     fig, axes = plt.subplots(4, 1, figsize=(12, 9), sharex=True)
+    # Track whether we've already added legend entries for each overlay type so
+    # the combined legend remains compact and non-redundant.
+    vt_labeled = False
+    mag_labeled = False
+    sheath_labeled = False
     for i, p in enumerate(PROBES):
         key = str(p)
         ax = axes[i]
@@ -182,21 +206,35 @@ def _combined_bn_plot(BN_map: dict, vt: dict, crossings_per_probe: dict):
         # axis and hide the field curves outside the visible window.
         ax.plot(bn.index, bn.values, lw=1.1, color="k", label="B_N")
 
+        is_first = (i == 0)
+
         if vt and key in vt:
             for (t0s, t1s) in vt[key]:
                 t0 = pd.to_datetime(t0s)  # naive UTC
                 t1 = pd.to_datetime(t1s)
                 if t1 < t0:
                     t0, t1 = t1, t0
-                ax.axvspan(t0, t1, color="k", alpha=0.05)
+                label = "VT intervals" if (is_first and not vt_labeled) else None
+                ax.axvspan(t0, t1, color="k", alpha=0.05, label=label)
+                if label is not None:
+                    vt_labeled = True
         # Crossing markers
         for typ, i1, i2 in (crossings_per_probe.get(key) or []):
             for idx in [i1, i2]:
                 try:
                     t_cross = bn.index[int(idx)]
-                    ax.axvline(t_cross, color='r' if typ=='magnetosphere' else 'g', ls='--', lw=1.0, alpha=0.6)
                 except Exception:
-                    pass
+                    continue
+                if typ == 'magnetosphere':
+                    label = "Magnetosphere-side crossing" if (is_first and not mag_labeled) else None
+                    ax.axvline(t_cross, color='r', ls='--', lw=1.0, alpha=0.6, label=label)
+                    if label is not None:
+                        mag_labeled = True
+                else:
+                    label = "Magnetosheath/other crossing" if (is_first and not sheath_labeled) else None
+                    ax.axvline(t_cross, color='g', ls='--', lw=1.0, alpha=0.6, label=label)
+                    if label is not None:
+                        sheath_labeled = True
         ax.set_ylabel(f'MMS{p}\nB_N (nT)')
         ax.grid(True, alpha=0.2)
         if i == 0:
