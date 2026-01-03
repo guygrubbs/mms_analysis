@@ -135,6 +135,50 @@ def main() -> None:  # pragma: no cover - orchestration only
     # 3. Continuous region classification on t_master grid
     layers, region_labels = _build_region_labels(t_master, evt, B_lmn)
 
+    # Crossing-direction diagnostics. For each probe, record the time and
+    # approximate direction (outbound/inbound) of its last threshold crossing
+    # based on the region_labels sequence around that time. This helps
+    # interpret whether spacecraft found inside or outside the observed sphere
+    # near the end of the interval are consistent with the boundary history.
+    last_crossing_time: dict[str, np.datetime64] = {}
+    last_crossing_dir: dict[str, str] = {}
+    for p, ct_list in crossings.items():
+        if not ct_list:
+            print(f"[animation/observed] MMS{p}: no discrete crossings above threshold")
+            last_crossing_dir[p] = "none"
+            continue
+        last_ct = ct_list[-1]
+        last_crossing_time[p] = last_ct
+
+        ct_arr = np.array(last_ct, dtype=t_master.dtype)
+        idx = np.searchsorted(t_master, ct_arr, side="left")
+        if idx <= 0:
+            k_cross = 0
+        elif idx >= t_master.size:
+            k_cross = t_master.size - 1
+        else:
+            if (ct_arr - t_master[idx - 1]) <= (t_master[idx] - ct_arr):
+                k_cross = idx - 1
+            else:
+                k_cross = idx
+
+        direction = "unknown"
+        lab_arr = region_labels.get(p)
+        if lab_arr is not None and lab_arr.size >= 3:
+            k_before = max(k_cross - 1, 0)
+            k_after = min(k_cross + 1, lab_arr.size - 1)
+            before = str(lab_arr[k_before])
+            after = str(lab_arr[k_after])
+            if before == "magnetosphere" and after in ("mp_layer", "sheath"):
+                direction = "outbound (magnetosphere→sheath)"
+            elif before in ("mp_layer", "sheath") and after == "magnetosphere":
+                direction = "inbound (sheath→magnetosphere)"
+
+        last_crossing_dir[p] = direction
+        print(
+            f"[animation/observed] MMS{p} last crossing at {last_ct} classified as {direction}"
+        )
+
     # 4. Build an observation-based boundary model.
     #
     #    Orientation: shared N from the algorithmic LMN triads (physics-driven
@@ -535,8 +579,23 @@ def main() -> None:  # pragma: no cover - orchestration only
 
     fig.autofmt_xdate()
 
+    # region_text summarises current layer classifications (magnetosphere /
+    # mp_layer / sheath) for probes with valid labels. When no classification
+    # is available we leave it blank; this does *not* indicate missing
+    # ephemeris or field data.
     region_text = ax_BN.text(0.01, 1.02, "", transform=ax_BN.transAxes, va="bottom", ha="left", fontsize=9)
     time_text = fig.text(0.02, 0.93, "", fontsize=10, weight="bold")
+    # Display the instantaneous observed radial stand-off distance R_offsets[k]
+    # used for the spherical boundary surface.
+    R_text = ax_3d.text2D(
+        0.02,
+        0.95,
+        "",
+        transform=ax_3d.transAxes,
+        va="top",
+        ha="left",
+        fontsize=9,
+    )
     cursor_BL = ax_BL.axvline(t_master[0], color="k", linestyle="-", linewidth=1.2)
     cursor_BM = ax_BM.axvline(t_master[0], color="k", linestyle="-", linewidth=1.2)
     cursor_BN = ax_BN.axvline(t_master[0], color="k", linestyle="-", linewidth=1.2)
@@ -637,6 +696,7 @@ def main() -> None:  # pragma: no cover - orchestration only
             *(s for s, *_ in scatters.values()),
             region_text,
             time_text,
+            R_text,
         ]
         k0 = int(frame_idx[0])
         d0 = R_offsets[k0]
@@ -667,9 +727,17 @@ def main() -> None:  # pragma: no cover - orchestration only
         if summary:
             region_text.set_text("   ".join(summary))
         else:
-            region_text.set_text("No valid data")
+            # No valid region labels at this time; leave the summary blank to
+            # avoid suggesting that the underlying data are missing.
+            region_text.set_text("")
 
         time_text.set_text(str(t))
+
+        R_val = R_offsets[k]
+        if np.isfinite(R_val):
+            R_text.set_text(f"R_obs = {R_val:.2f} R_E")
+        else:
+            R_text.set_text("R_obs = NaN")
 
         for p, (scat, x_arr, y_arr, z_arr) in scatters.items():
             if k < x_arr.size:
@@ -677,6 +745,71 @@ def main() -> None:  # pragma: no cover - orchestration only
                     np.array([x_arr[k]]),
                     np.array([y_arr[k]]),
                     np.array([z_arr[k]]),
+                )
+
+        # End-of-interval diagnostics: at the final animation frame, compare
+        # spacecraft radial distances |r| to the observed boundary radius
+        # R_offsets[k] and to the composite score / region labels.
+        if frame == n_frames - 1:
+            R_end = float(R_offsets[k]) if np.isfinite(R_offsets[k]) else float("nan")
+            print(
+                f"[animation/observed] End-frame diagnostics at t={t}: "
+                f"R_obs={R_end:.2f} R_E"
+            )
+            for p in ov.PROBES:
+                pos = pos_master.get(p)
+                rmag = float("nan")
+                delta = float("nan")
+                loc = "unknown"
+                if pos is not None:
+                    x_arr_p, y_arr_p, z_arr_p = pos
+                    if k < x_arr_p.size:
+                        r_vec = np.array(
+                            [x_arr_p[k], y_arr_p[k], z_arr_p[k]], float
+                        )
+                        rmag = float(np.linalg.norm(r_vec))
+                        if np.isfinite(R_end):
+                            delta = rmag - R_end
+                            if delta >= 0.0:
+                                loc = "outside (sheath-side, |r| > R_obs)"
+                            else:
+                                loc = "inside (magnetosphere-side, |r| < R_obs)"
+
+                region_label = "N/A"
+                lab_arr = region_labels.get(p)
+                if lab_arr is not None and k < lab_arr.size:
+                    region_label = str(lab_arr[k])
+
+                score_val = float("nan")
+                score_state = "n/a"
+                t_sc = score_times.get(p)
+                sc_arr = score_vals.get(p)
+                if t_sc is not None and sc_arr is not None and sc_arr.size:
+                    t_sc_s = t_sc.astype("datetime64[s]")
+                    t_end_s = t.astype("datetime64[s]")
+                    ts_int = t_sc_s.astype("int64")
+                    te_int = t_end_s.astype("int64")
+                    j = np.searchsorted(ts_int, te_int, side="left")
+                    if j <= 0:
+                        idx_sc = 0
+                    elif j >= ts_int.size:
+                        idx_sc = ts_int.size - 1
+                    else:
+                        if (te_int - ts_int[j - 1]) <= (ts_int[j] - te_int):
+                            idx_sc = j - 1
+                        else:
+                            idx_sc = j
+                    score_val = float(sc_arr[idx_sc])
+                    score_state = ">=0.4" if score_val >= 0.4 else "<0.4"
+
+                last_ct = last_crossing_time.get(p)
+                last_dir = last_crossing_dir.get(p, "none")
+
+                print(
+                    f"[animation/observed]   MMS{p}: |r|={rmag:.2f} R_E, "
+                    f"Delta=|r|-R_obs={delta:.2f} R_E, loc={loc}, "
+                    f"region={region_label}, score={score_val:.2f} ({score_state}), "
+                    f"last_cross={last_ct} ({last_dir})"
                 )
 
         d = R_offsets[k]
@@ -699,6 +832,7 @@ def main() -> None:  # pragma: no cover - orchestration only
             *(s for s, *_ in scatters.values()),
             region_text,
             time_text,
+            R_text,
         ]
         if boundary["surf"] is not None:
             artists.append(boundary["surf"])
