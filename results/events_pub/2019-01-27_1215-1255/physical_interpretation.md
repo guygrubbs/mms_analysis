@@ -1,9 +1,9 @@
 # Physical interpretation: MMS 2019-01-27 12:15–12:55 UT (two LMN systems)
 
 Inputs and methods
-- LMN sets and .sav sources:
-  - all_1243: mp_lmn_systems_20190127_1215-1255_mp-ver2b.sav (MMS1–4 LMN from the post-12:43 UT crossing)
-  - mixed_1230_1243: mp_lmn_systems_20190127_1215-1255_mp-ver3b.sav (MMS1–2 from 12:43; MMS3–4 from ~12:30 MVAB)
+- LMN sets and .sav sources (canonical vs legacy):
+  - mixed_1230_1243 (canonical): mp_lmn_systems_20190127_1215-1255_mp-ver3b.sav (MMS1–2 from 12:43; MMS3–4 from ~12:30 MVAB)
+  - all_1243 (legacy comparison): mp_lmn_systems_20190127_1215-1255_mp-ver2b.sav (MMS1–4 LMN from the post-12:43 UT crossing)
 - Option 2 executed with strict local caching: DIS (ion) moments loaded from local pydata/ cache; no downloads performed.
 - Cold-ion windows: inferred from local DIS when possible; in this run the DIS quality flags were not present in the local notplot cache, so .sav-derived VI_LMN quantiles were used as a fallback (logged by the script). Windows require ≥30 s contiguous intervals.
 - Boundary detection: |dBN/dt| threshold ≥ 0.4 with ≥30 s separation (user preference). Crossings restricted to 12:15–12:55 UT.
@@ -32,7 +32,7 @@ Physical implications and comparison of LMN choices
 - Mixed LMN (MMS3/4 from ~12:30 MVAB) rotates N slightly for MMS3/4, yielding:
   - Larger +DN for MMS3 and small +DN for MMS4 (vs near‑zero in all_1243), consistent with a geometry that better aligns with the motion observed earlier in the interval.
   - Reduced median timing errors across spacecraft pairs (≈1.3 s vs 2.6 s), suggesting improved internal consistency for DN-based timing when MMS3/4 use ~12:30 MVAB normals.
-- Recommendation: For analyses emphasizing inter-spacecraft timing and DN consistency around 12:18–12:45 UT, prefer mixed_1230_1243 for MMS3/4. For simplicity or when using a single reference crossing, all_1243 remains acceptable; key conclusions (high shear, presence of clear crossings) are unchanged.
+- Recommendation: For production analyses in this repository (inter-spacecraft timing and DN consistency around 12:18–12:45 UT), we adopt mixed_1230_1243 (mp-ver3b) as the canonical LMN system. The earlier all_1243 set (mp-ver2b) is retained as a legacy comparison; key conclusions (high shear, presence of clear crossings) are unchanged between them.
 
 Data gaps, uncertainties, and limitations
 - Cold-ion windows: DIS quality flags were not accessible from the local notplot cache for this run; the script fell back to .sav-derived VI_LMN quantiles for window inference. This is documented in the logs. If local DIS quality flags become available, the pipeline will use them automatically.

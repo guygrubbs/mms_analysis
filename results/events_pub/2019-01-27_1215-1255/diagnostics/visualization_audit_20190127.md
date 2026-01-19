@@ -166,3 +166,27 @@ numerically documented in the diagnostics CSVs and
 `issues_and_resolutions.md` and will need a dedicated physics/LMN
 alignment pass to resolve.
 
+## 5. VN alignment experiment knobs (script interface)
+
+For reproducible ViN alignment experiments without copying
+`make_event_figures_20190127.py`, the script now exposes a small
+set of command-line options:
+
+- `--vn-alignment-method {nearest,linear,cubic}` controls how
+  mms_mp ViN is aligned to the IDL `.sav` timestamps (nearest
+  neighbour, linear interpolation, or cubic spline where SciPy is
+  available).
+- `--max-time-offset-ms FLOAT` optionally masks any IDL ViN sample
+  whose nearest mms_mp ViN point is farther than the given absolute
+  time offset in milliseconds; masked samples are excluded from the
+  VN QA histograms and from `metrics.json`.
+- `--vn-qa-window-start` / `--vn-qa-window-end` (both UTC strings
+  like `2019-01-27/12:25:00`) restrict the time window used for VN
+  QA overlays and histograms. If omitted, the canonical
+  12:15–12:55 `TRANGE` is used.
+
+The JSON file `results/events_pub/2019-01-27_1215-1255/metrics.json`
+includes a `"config"` block recording the chosen
+`vn_alignment_method` and `max_time_offset_ms` so that regenerated
+VN figures and metrics remain self-describing.
+

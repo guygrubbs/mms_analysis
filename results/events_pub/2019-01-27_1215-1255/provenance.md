@@ -81,10 +81,10 @@ Every file listed above has `overlaps_event_window = True` for the 12:15–12:55
 
 ### 1.6 Authoritative IDL .sav inputs
 
-LMN triads and ViN time series used as the **authoritative coordinate system** for this event:
+LMN triads and ViN time series used as the **authoritative coordinate system** for this event. For this repository, the canonical reference frame is the `mixed_1230_1243` set (`mp_lmn_systems_20190127_1215-1255_mp-ver3b.sav`); the `all_1243` set (`mp_lmn_systems_20190127_1215-1255_mp-ver2b.sav`) is preserved as a legacy comparison:
 
-- `mp_lmn_systems_20190127_1215-1255_mp-ver2b.sav` (labelled `all_1243`)
-- `mp_lmn_systems_20190127_1215-1255_mp-ver3b.sav` (labelled `mixed_1230_1243`)
+- `mp_lmn_systems_20190127_1215-1255_mp-ver3b.sav` (labelled `mixed_1230_1243`, canonical LMN set)
+- `mp_lmn_systems_20190127_1215-1255_mp-ver2b.sav` (labelled `all_1243`, legacy comparison set)
 
 
 ## 2. Processing chain (CDF → mms_mp → outputs)
@@ -94,7 +94,7 @@ The event analysis (`examples/analyze_20190127_dn_shear.py`) and diagnostics (`e
 1. **Load CDFs** with pySPEDAS (`notplot=True`, strict local cache) or cdflib (for burst distributions).
 2. **Resample to 1 s UTC grid** using `mms_mp.data_loader.to_dataframe` and `mms_mp.data_loader.resample`.
 3. **LMN coordinate system:**
-   - Event analysis uses LMN triads from the `.sav` files (ver2b/ver3b) as authoritative.
+   - Event analysis uses LMN triads from the `.sav` files as authoritative, with `mp-ver3b` (`mixed_1230_1243`) as the canonical reference frame and `mp-ver2b` (`all_1243`) retained as a legacy comparison.
    - Diagnostics also compute an independent `mms_mp.coords.hybrid_lmn` from raw FGM (and optionally MEC) to quantify coordinate‑system differences.
 4. **BN:** rotate B_gsm to LMN: `BN = B_gsm · N` (either .sav LMN or hybrid LMN).
 5. **VN:** rotate ion bulk velocity `V_i_gse` using the **.sav LMN**, to compare directly with `.sav` ViN.
