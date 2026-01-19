@@ -176,15 +176,16 @@ python examples/2019_01_27_1200_visualization.py --overlay-json examples/overlay
 
 ### Event 2019‑01‑27 publication analysis (two LMN systems)
 ```bash
-# Reproduce the three‑part analysis comparing LMN sets (all_1243 vs mixed_1230_1243)
+# Reproduce the three‑part analysis; mixed_1230_1243 (mp-ver3b) is the canonical LMN set,
+# with all_1243 (mp-ver2b) retained as a legacy comparison.
 # Strict local caching: reads existing CDFs from ./pydata and never re‑downloads
 py -3.11 examples/analyze_20190127_dn_shear.py
 
 # Outputs (CSV + PNG) are saved to:
 #   results/events_pub/2019-01-27_1215-1255/
 # Inputs used:
-#   • mp_lmn_systems_20190127_1215-1255_mp-ver2b.sav (all_1243)
-#   • mp_lmn_systems_20190127_1215-1255_mp-ver3b.sav (mixed_1230_1243)
+#   • mp_lmn_systems_20190127_1215-1255_mp-ver3b.sav (mixed_1230_1243; canonical LMN set)
+#   • mp_lmn_systems_20190127_1215-1255_mp-ver2b.sav (all_1243; legacy comparison set)
 ```
 This script generates:
 - dn_mms{1–4}_{set}.csv, bn_stacked_{set}.png, dn_vs_time_{set}.png, shear_{set}.csv
@@ -228,11 +229,11 @@ Notes:
   - results/events_pub/2019-01-27_1215-1255/provenance.md
 - Derivation chain: CDF → pySPEDAS (notplot) → pandas (UTC, 1 s) → mms_mp.hybrid_lmn → rotate B/V → integrate DN (with Option 2 cold‑ion windows in the event script).
 - Quantitative diagnostics (see diagnostics/):
-  - bn_difference_stats.csv: includes RMS |ΔBN| and N‑vector angle differences; independent LMN differs substantially from curated .sav LMN (N‑angle ≈ 90° for this event). For publication, we treat .sav LMN as authoritative.
-  - dn_difference_stats.csv: DN metrics for DN(mms_mp) vs DN(.sav‑windowed), integrated over the same cold‑ion windows within 12:15–12:55; the published dn_mms*_all_1243.csv file has little to no overlap with this window and is used only as a secondary check.
+  - bn_difference_stats.csv: includes RMS |ΔBN| and N‑vector angle differences; independent LMN differs substantially from the curated .sav LMN (canonical mixed_1230_1243, mp-ver3b) for this event. For publication, that .sav LMN is treated as authoritative; the hybrid LMN is retained only for diagnostics.
+  - dn_difference_stats.csv: DN metrics for DN(mms_mp) vs DN(.sav‑windowed), integrated over the same cold‑ion windows within 12:15–12:55; the original published dn_mms*_all_1243.csv file (based on the legacy mp-ver2b LMN set) has little to no overlap with this window and is used only as a secondary check.
   - vn_overlay_mms{1–4}.png and vn_difference_stats.csv: visual and quantitative comparison of ViN from .sav vs mms_mp (rotated by .sav LMN); systematic offsets and decorrelation reflect differing quality‑flag and resampling choices rather than coding errors.
 - Takeaway:
-  - LMN can be derived independently from raw FGM (+MEC) but will depend on interval/method; curated .sav LMN remains the reference for this event.
+  - LMN can be derived independently from raw FGM (+MEC) but will depend on interval/method; for this event, the canonical reference frame is the mixed_1230_1243 .sav LMN (mp-ver3b), with the all_1243 .sav (mp-ver2b) preserved as a legacy comparison set.
   - BN is fully reproducible from raw FGM once an LMN is chosen.
   - VN is reproducible where DIS moments exist and quality is acceptable.
   - DN is reproducible when the same cold‑ion windows are applied (event script implements Option 2 under strict local caching).

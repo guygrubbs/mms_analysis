@@ -5,7 +5,7 @@ This document summarizes similarities and differences among:
 - pySPEDAS (references/pyspedas-master)
 - IDL example + .sav (references/IDL_Code)
 
-It includes the newly added event .sav file: `mp_lmn_systems_20190127_1215_1255_mp_ver2.sav`.
+It includes the event .sav files for 2019-01-27: the canonical LMN set `mp_lmn_systems_20190127_1215-1255_mp-ver3b.sav` ("mixed_1230_1243") and the legacy set `mp_lmn_systems_20190127_1215-1255_mp-ver2b.sav` ("all_1243").
 
 ## Scope and orientation
 - mms_mp: end-to-end MP workflow (load → ephemeris → LMN → boundary detection → motion/timing → thickness → plots/outputs)

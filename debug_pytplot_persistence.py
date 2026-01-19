@@ -8,6 +8,9 @@ after loading multiple spacecraft data.
 """
 
 import numpy as np
+# NumPy 2.x compatibility for third-party libraries (e.g., pytplot/bokeh)
+if not hasattr(np, "bool8"):
+    np.bool8 = np.bool_
 from datetime import datetime
 from mms_mp.data_loader import _load_state
 from pytplot import data_quants, get_data
