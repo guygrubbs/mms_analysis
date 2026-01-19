@@ -196,16 +196,76 @@ def generic_spectrogram(t: np.ndarray,
                         return_axes: bool = False,
                         clabel: Optional[str] = None,
                         cax: Optional[plt.Axes] = None):
-    """
-    Quick-draw pcolormesh for any 2-D spectrogram.
+    """Quick-draw pcolormesh for any 2-D spectrogram.
+
+    This helper standardises the visual appearance of energy–time
+    spectrograms used throughout the MMS-MP examples.  It accepts pre-binned
+    ``data(e, t)`` arrays together with their time and energy axes and handles
+    log-scaling, colour limits, and masking.
 
     Parameters
     ----------
-    t, e, data : (N,) (M,) (N,M) arrays
-    log10      : take log10(data)  (default True)
-    mask       : boolean same shape as data – False→transparent
-    vmin/vmax  : colour limits **after** log10 if log10=True
-    clabel     : optional colorbar label override (e.g., 'log10 dJ (keV/(cm^2 s sr keV))')
+    t
+        Time axis (1-D).  Typically ``datetime64[ns]`` for MMS event plots,
+        but numeric epoch seconds are also accepted.
+
+    e
+        Energy axis (1-D) in eV or keV depending on the instrument.  FPI
+        spectrograms generally use eV; HPCA products can extend to keV.
+
+    data
+        2-D array with shape ``(len(t), len(e))`` or ``(len(e), len(t))``
+        representing a quantity such as differential energy flux or counts.
+        The helper internally orients the array to match the
+        ``(time, energy)`` convention before plotting.  Units are passed
+        through to the colourbar label and are not interpreted.
+
+    log10
+        If ``True`` (default), plot ``log10(data)`` and ignore non-positive
+        values via masking.
+
+    vmin, vmax
+        Optional colour limits applied after log10 scaling (if enabled).
+
+    cmap
+        Matplotlib colormap name or instance.
+
+    ylabel
+        Y-axis label for energy, default ``'Energy (eV)'``.
+
+    title
+        Optional panel title.
+
+    mask
+        Optional boolean mask with the same shape as ``data``; values marked
+        ``False`` are rendered transparent.  This is typically constructed from
+        DIS/DES/HPCA quality flags.
+
+    ax
+        Optional Matplotlib :class:`~matplotlib.axes.Axes` to draw into.
+        When omitted, a new figure and axes are created.
+
+    show
+        If ``True`` (default), call :func:`matplotlib.pyplot.show` after
+        plotting.
+
+    return_axes
+        If ``True``, return ``(ax, cbar)`` instead of ``None`` so callers can
+        further customise the plot.
+
+    clabel
+        Optional colourbar label override, e.g.
+        ``'log10 dJ (keV/(cm^2 s sr keV))'``.
+
+    cax
+        Optional dedicated axes for the colourbar, useful in multi-panel
+        layouts.
+
+    Returns
+    -------
+    QuadMesh or (Axes, Colorbar)
+        By default returns ``None`` (for backward compatibility).  When
+        ``return_axes=True``, returns the axes and colourbar objects.
     """
     z = _prep_log(data, log10)
     cbl = clabel if clabel is not None else ('log$_{10}$ Flux' if log10 else 'Flux')

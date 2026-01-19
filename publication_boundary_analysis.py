@@ -28,6 +28,15 @@ import warnings
 import os
 import matplotlib.colors as mcolors
 
+# ---------------------------------------------------------------------------
+# Compatibility shim for NumPy 2.x with older bokeh / pytplot stacks
+# ---------------------------------------------------------------------------
+# Some versions of bokeh referenced by pytplot expect ``np.bool8`` which was
+# removed in NumPy 2.0. Provide a minimal alias so imports succeed without
+# changing external dependencies.
+if not hasattr(np, "bool8"):
+    np.bool8 = np.bool_
+
 # Force matplotlib to use UTC for all date formatting
 plt.rcParams['timezone'] = 'UTC'
 # Suppress benign pandas conversion warning

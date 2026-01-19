@@ -20,6 +20,10 @@ Event: 2019-01-27 12:30:50 UT Magnetopause Crossing
 """
 
 import numpy as np
+# NumPy 2.x compatibility for third-party libraries (e.g., pytplot/bokeh)
+if not hasattr(np, "bool8"):
+    np.bool8 = np.bool_
+
 import matplotlib
 matplotlib.use('Agg')  # Use non-interactive backend
 import matplotlib.pyplot as plt

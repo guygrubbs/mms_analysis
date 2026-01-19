@@ -23,6 +23,10 @@ Period: 12:25:00 - 12:35:00 UT (10 minutes around crossing)
 """
 
 import numpy as np
+# NumPy 2.x compatibility for third-party libraries (e.g., pytplot/bokeh)
+if not hasattr(np, "bool8"):
+    np.bool8 = np.bool_
+
 import matplotlib
 matplotlib.use('Agg')  # Use non-interactive backend
 import matplotlib.pyplot as plt

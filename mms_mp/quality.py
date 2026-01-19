@@ -136,9 +136,29 @@ def resample_mask(t_orig: np.ndarray,
                   mask: np.ndarray,
                   t_target: np.ndarray,
                   method: str = 'nearest') -> np.ndarray:
-    """
-    Resample a boolean quality mask onto *t_target* grid using
-    the toolkit’s resample helper.
+    """Resample a boolean quality mask onto a target time grid.
+
+    Parameters
+    ----------
+    t_orig
+        Original time stamps corresponding to ``mask``.
+
+    mask
+        Boolean quality mask (True = good sample).
+
+    t_target
+        Target time grid, usually a uniform grid produced by
+        :func:`mms_mp.resample.resample` for science data.
+
+    method
+        Resampling strategy passed to :func:`mms_mp.resample.resample`
+        (typically ``'nearest'``).
+
+    Returns
+    -------
+    ndarray of bool
+        Mask defined on ``t_target`` with ``True`` where good samples exist
+        after resampling.
     """
     _, mask_rs, _ = _resample(t_orig, mask.astype(float),
                               cadence='custom', method=method,
@@ -151,10 +171,33 @@ def resample_mask(t_orig: np.ndarray,
 # ------------------------------------------------------------------
 def build_quality_masks(event: Dict[str, Dict[str, Tuple[np.ndarray, np.ndarray]]],
                         probe: str = '1') -> Dict[str, np.ndarray]:
-    """
-    Collect standard masks for DIS (ions), DES (electrons), and HPCA.
-    The event dict must come from data_loader.load_event (which loads
-    the _quality_flag variables automatically when present).
+    """Collect standard instrument quality masks from a ``load_event`` dict.
+
+    Parameters
+    ----------
+    event
+        Event dictionary returned by :func:`mms_mp.data_loader.load_event`.
+        Must contain the MMS quality-flag variables for the chosen probe when
+        they are available in the underlying CDFs.
+
+    probe
+        MMS probe identifier as a string (e.g. ``'1'``..``'4'``).
+
+    Returns
+    -------
+    dict[str, ndarray]
+        Mapping from instrument tag to boolean mask:
+
+        - ``'DIS'``: FPI ion (DIS) quality mask.
+        - ``'DES'``: FPI electron (DES) quality mask.
+        - ``'HPCA'``: HPCA status mask.
+
+    Notes
+    -----
+    These masks are designed to be combined with science data using
+    :func:`apply_mask` or :func:`combine_masks` before computing VN, DN, or
+    spectrograms, ensuring that only reliable samples contribute to the
+    magnetopause analysis.
     """
     q: Dict[str, np.ndarray] = {}
 

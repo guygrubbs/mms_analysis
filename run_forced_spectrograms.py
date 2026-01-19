@@ -16,6 +16,10 @@ from pathlib import Path
 from typing import List, Optional, Tuple
 
 import numpy as np
+# NumPy 2.x compatibility for third-party libraries (e.g., pytplot/bokeh)
+if not hasattr(np, "bool8"):
+    np.bool8 = np.bool_
+
 import matplotlib.pyplot as plt
 
 from pyspedas.projects import mms

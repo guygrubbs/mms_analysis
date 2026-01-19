@@ -65,19 +65,56 @@ def resample(t_orig: np.ndarray,
              cadence: str = '1s',
              method: Literal['nearest', 'linear', 'fft'] = 'nearest'
              ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """
+    """Resample a 1-D or 2-D time series onto a regular time grid.
+
     Parameters
     ----------
-    t_orig : epoch array  (TT2000 int64, datetime64, or seconds)
-    data_orig : (N, …) array
-    cadence : pandas offset, e.g. '250ms', '1s'
-    method : 'nearest', 'linear', or 'fft'
+    t_orig
+        Original sample times.  May be ``datetime64`` values, TT2000-style
+        int64 nanoseconds since 2000-01-01, or Unix-like floats in seconds.
+        Values are converted internally to ``datetime64[ns]`` while
+        preserving ordering.
+
+    data_orig
+        Data values at times ``t_orig``.  Shape ``(N,)`` or ``(N, M)`` where N
+        is the number of samples and M the number of components (e.g. 3 for a
+        vector quantity such as B or V).
+
+    cadence
+        Target sampling interval specified as a pandas offset string (for
+        example ``'250ms'``, ``'1s'``).  The resampled time grid spans the full
+        range of ``t_orig``.
+
+    method
+        Interpolation method used to fill the regular grid:
+
+        - ``'nearest'``  – piecewise-constant nearest-neighbour (robust to
+          gaps; default).
+        - ``'linear'``   – first-order interpolation in time using pandas.
+        - ``'fft'``      – frequency-domain resampling (requires SciPy) for
+          uniformly sampled inputs.
 
     Returns
     -------
-    t_new : datetime64[ns] uniform grid
-    data_new : resampled array
-    good_mask : bool array (True = original datum existed nearby)
+    t_new : ndarray of datetime64[ns]
+        Regular time grid covering ``[t_orig.min(), t_orig.max()]`` at the
+        specified cadence.
+
+    data_new : ndarray
+        Resampled data with shape ``(len(t_new),)`` or ``(len(t_new), M)``
+        matching the input dimensionality.
+
+    good_mask : ndarray of bool
+        Boolean array with shape ``(len(t_new),)`` marking samples where an
+        original datum existed “near enough” to the grid point.  For
+        ``method='nearest'`` this is effectively ``~isnan(data_new)``.
+
+    Notes
+    -----
+    This helper is used to place heterogeneous MMS instruments (FGM, FPI,
+    HPCA, EDP) on a common clock before computing derived quantities such as
+    VN, DN, and spectrograms.  Units and coordinate systems of ``data_orig``
+    are preserved; only the time axis is modified.
     """
     t_dt = _to_datetime64_ns(t_orig)
     start, end = t_dt.min(), t_dt.max()
@@ -124,9 +161,31 @@ def interpolate_to_time(t_src: np.ndarray,
                         y_src: np.ndarray,
                         t_target: np.ndarray,
                         *, kind: str = 'linear') -> np.ndarray:
-    """
-    Interpolate y(t) from t_src onto t_target grid using numpy/pandas.
-    Works with 1-D y; uses np.interp for speed.
+    """Interpolate a 1-D signal from ``t_src`` onto a new time grid.
+
+    Parameters
+    ----------
+    t_src
+        Source time samples as a 1-D array (numeric or datetime-like).  Values
+        are converted to float seconds internally.
+
+    y_src
+        Source data values, 1-D or 2-D.  For 2-D input the interpolation is
+        applied column-wise.
+
+    t_target
+        Target time samples onto which ``y_src`` should be interpolated.  Must
+        be sortable and of compatible type with ``t_src``.
+
+    kind
+        Currently kept for API compatibility; interpolation is always linear
+        via :func:`numpy.interp`.
+
+    Returns
+    -------
+    ndarray
+        Interpolated values at ``t_target`` with the same trailing shape as
+        ``y_src``.
     """
     # Ensure 1-D arrays
     t_src = np.asarray(t_src).astype(float)
@@ -148,11 +207,38 @@ def merge_vars(vars_in: Dict[str, Tuple[np.ndarray, np.ndarray]],
                cadence: str = '250ms',
                method: Literal['nearest', 'linear', 'fft'] = 'nearest'
                ) -> Tuple[np.ndarray, Dict[str, np.ndarray], Dict[str, np.ndarray]]:
-    """
-    Convenience wrapper:
-        • Each input entry:  var_name → (t, data)
-        • Resamples *all* to common grid
-        • Returns t_common, dict(var→data_resampled), dict(var→good_mask)
+    """Resample multiple ``(t, data)`` series to a shared regular time grid.
+
+    Parameters
+    ----------
+    vars_in
+        Mapping ``name -> (t, data)`` where each pair is suitable for
+        :func:`resample`.  Time units and coordinate systems are not modified;
+        only the time axis is harmonised.
+
+    cadence, method
+        Passed through to :func:`resample` and interpreted identically for each
+        variable.
+
+    Returns
+    -------
+    t_common : ndarray of datetime64[ns]
+        Common regular time grid covering the union of all input intervals.
+
+    data : dict[str, ndarray]
+        Dictionary mapping each input name to its resampled data array on
+        ``t_common``.
+
+    masks : dict[str, ndarray]
+        Dictionary mapping each input name to a boolean mask indicating where
+        that variable is considered valid on ``t_common`` (both present after
+        join *and* marked good by the single-series resampler).
+
+    Notes
+    -----
+    This utility underpins many higher-level operations in :mod:`mms_mp`,
+    including VN blending (synchronising bulk and E×B velocities) and joint
+    spectrogram plotting.
     """
     # Use the widest start–end from inputs
     starts = [_to_datetime64_ns(t).min() for t, _ in vars_in.values()]

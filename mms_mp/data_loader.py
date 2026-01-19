@@ -403,9 +403,219 @@ def load_event(
         include_ephem: bool = True,
         download_only: bool = False
 ) -> Dict[str, Dict[str, Tuple[np.ndarray, np.ndarray]]]:
-    """
-    By default only the 'fast' cadence is used.
-    Set include_brst / include_srvy / include_slow to True to add extras.
+    """Load a multi-spacecraft MMS *event* dict suitable for magnetopause analysis.
+
+    This is the main high-level data interface for the MMS-MP toolkit. Given a
+    UTC timerange and a list of probes, it:
+
+    1. Uses **pySPEDAS** to download (if needed) and load MMS L2 CDF products
+       for FGM, FPI (DIS/DES), HPCA, EDP, and ephemeris.
+    2. Harvests the resulting tplot variables into a nested Python dictionary
+       of NumPy arrays, with a consistent naming scheme across probes.
+    3. Applies light sanity checks, optional cross-probe reconstruction, and
+       populates a rich ``__meta__`` entry describing data provenance.
+
+    The returned structure is::
+
+        evt: dict[str, dict[str, tuple[np.ndarray, np.ndarray]]]
+
+        # Per-probe science variables
+        evt['1']['B_gsm']   -> (t_B, B_gsm)   # magnetic field
+        evt['1']['N_tot']   -> (t, N_tot)     # ion density
+        evt['1']['N_e']     -> (t, N_e)       # electron density
+        evt['1']['N_he']    -> (t, N_he)      # He⁺ density (if HPCA enabled)
+        evt['1']['V_i_gse'] -> (t, Vi_gse)    # ion bulk velocity
+        evt['1']['V_e_gse'] -> (t, Ve_gse)    # electron bulk velocity (if avail.)
+        evt['1']['V_he_gsm']-> (t, Vhe_gsm)   # He⁺ bulk velocity (if HPCA enabled)
+        evt['1']['E_gse']   -> (t, E_gse)     # electric field (if EDP enabled)
+        evt['1']['SC_pot']  -> (t, V_sc)      # spacecraft potential (if EDP enabled)
+        evt['1']['POS_gsm'] -> (t, R_gsm)     # position
+        evt['1']['VEL_gsm'] -> (t, V_gsm)     # spacecraft velocity
+
+        # Quality-flag channels stored under MMS naming
+        evt['1']['mms1_dis_quality_flag'] -> (t, flag)
+        evt['1']['mms1_des_quality_flag'] -> (t, flag)
+        evt['1']['mms1_hpca_status_flag'] -> (t, status)
+
+        # Global metadata shared across probes
+        evt['__meta__'] -> dict with keys:
+            'requested_trange', 'probes', 'cadence_preferences', 'options',
+            'download_summary', 'ephemeris_sources', 'sources',
+            'time_coverage', 'warnings'
+
+    Physics / units
+    ---------------
+    All arrays are **as close as possible to the native MMS L2 products**, but
+    reshaped and trimmed for convenient use in magnetopause workflows:
+
+    - ``B_gsm``
+        Magnetic field vector in GSM or GSE coordinates (treated as GSM by
+        convention here).
+
+        * Source CDF/tplot names: typically
+
+          ``mms{p}_fgm_b_gsm_{rate}_l2[_bvec]`` or
+          ``mms{p}_fgm_b_gse_{rate}_l2[_bvec]``
+
+        * Stored as: ``(t_B, B)`` where ``B`` has shape ``(N, 3)`` containing
+          ``[B_x, B_y, B_z]``.
+        * Units: nT.
+
+    - ``N_tot``
+        FPI-DIS ion number density.
+
+        * Source: ``mms{p}_dis_numberdensity_*`` (L2 then QL as fallback).
+        * Units: cm⁻³.
+
+    - ``N_e``
+        FPI-DES electron number density.
+
+        * Source: ``mms{p}_des_numberdensity_*`` (L2 then QL as fallback).
+        * Units: cm⁻³.
+
+    - ``N_he``
+        HPCA He⁺ number density (when ``include_hpca=True``).
+
+        * Source: ``mms{p}_hpca_*heplus*number_density*``.
+        * Units: cm⁻³.
+        * Used in magnetopause analysis as a composition-sensitive tracer for
+          magnetosheath vs magnetosphere.
+
+    - ``V_i_gse`` / ``V_e_gse``
+        FPI ion/electron bulk velocity vectors in GSE coordinates.
+
+        * Source: ``mms{p}_dis_bulkv_gse_*`` and ``mms{p}_des_bulkv_gse_*``.
+        * Shape: ``(N, 3)`` with components ``[Vx, Vy, Vz]``.
+        * Units: km s⁻¹.
+
+    - ``V_he_gsm``
+        HPCA He⁺ bulk velocity in GSM coordinates.
+
+        * Source: matching ``*_ion_bulk_velocity*`` tplot variable for the
+          chosen He⁺ number-density product.
+        * Shape: ``(N, 3)``; units: km s⁻¹.
+
+    - ``E_gse`` (optional)
+        DC electric field from EDP in GSE coordinates when ``include_edp=True``.
+
+        * Source: ``mms{p}_edp_dce_*_l2``.
+        * Shape: ``(N, 3)``; components [Ex, Ey, Ez].
+        * Units: mV m⁻¹ (as in MMS EDP L2).
+
+    - ``SC_pot`` (optional)
+        Spacecraft potential used for basic E-field corrections.
+
+        * Source: ``mms{p}_edp_scpot_*_l2``.
+        * Units: Volt.
+
+    - ``POS_gsm`` / ``VEL_gsm``
+        Spacecraft position and velocity from MEC ephemeris (preferred) or
+        definitive state files.
+
+        * Primary source: ``mms{p}_mec_r_gsm``, ``mms{p}_mec_v_gsm``; fallbacks
+          include GSE or definitive/state products where needed.
+        * Position units: km (data are converted from R_E when necessary).
+        * Velocity units: km s⁻¹.
+        * Coordinate system: GSM where available; otherwise, equivalent GSE
+          vectors are stored but still labelled ``POS_gsm`` / ``VEL_gsm`` for a
+          uniform interface (the original tplot source is recorded in
+          ``evt['__meta__']['sources'][probe]``).
+
+    The per-probe quality-flag channels are passed through unchanged so that
+    :mod:`mms_mp.quality` can construct science masks for DIS, DES, and HPCA.
+
+    Cross-environment naming
+    -------------------------
+    - **Raw CDFs** → pySPEDAS tplot variables such as::
+
+          mms1_fgm_b_gsm_fast_l2_bvec
+          mms1_dis_numberdensity_fast
+          mms1_des_bulkv_gse_fast
+          mms1_hpca_heplus_number_density_fast
+
+      These are discovered using :func:`pyspedas.get_data` and, when needed,
+      :func:`pyspedas.tnames`.
+
+    - **Python event dict** → compact variables ``B_gsm``, ``N_tot``, ``N_e``,
+      ``N_he``, ``V_i_gse``, ``V_e_gse``, ``V_he_gsm``, ``E_gse``, ``SC_pot``,
+      ``POS_gsm``, ``VEL_gsm`` under each probe key.
+
+    - **IDL / tplot workflows** use essentially the same tplot variable names
+      as listed above; the event dict can therefore be viewed as a thin Python
+      wrapper around the standard MMS/pySPEDAS naming. Event-specific IDL
+      ``.sav`` files used elsewhere in this repository (for example
+      ``mp_lmn_systems_20190127_1215-1255_mp-ver3b.sav``) contain derived
+      products such as LMN matrices, BN, VN, and DN that are *compared* against
+      but not required by :func:`load_event`.
+
+    Parameters
+    ----------
+    trange
+        Two-element list ``[start, end]`` with MMS/pySPEDAS-style UTC strings
+        (e.g. ``['2019-01-27/12:15:00', '2019-01-27/12:55:00']``).  These are
+        interpreted as UTC and converted to ``datetime64[ns]`` internally.
+
+    probes
+        Iterable of MMS probe identifiers (``'1'``–``'4'``).  The canonical
+        2019-01-27 magnetopause event uses all four probes.
+
+    data_rate_fgm, data_rate_fpi, data_rate_hpca
+        Preferred data-rate strings passed through to the pySPEDAS loaders for
+        FGM, FPI (DIS/DES), and HPCA respectively (e.g. ``'fast'``, ``'srvy'``,
+        ``'brst'``).  Additional rates can be enabled via the
+        ``include_brst``, ``include_srvy``, and ``include_slow`` flags below.
+
+    include_brst, include_srvy, include_slow
+        When set to ``True``, extend the list of candidate rates that will be
+        tried for a given instrument.  This only affects which files are
+        *eligible* to be used; :func:`load_event` still enforces consistency per
+        instrument and probe.
+
+    include_hpca
+        If ``True`` (default) attempt to load HPCA He⁺ moments.  Set to
+        ``False`` when HPCA data are known to be unavailable; in that case the
+        ``N_he`` and ``V_he_gsm`` entries will be present but filled with NaNs
+        and marked as ``'skipped'`` in the metadata.
+
+    include_edp
+        If ``True``, attempt to load DC electric field and spacecraft potential
+        from EDP.  When disabled the corresponding keys are still created but
+        contain NaNs.
+
+    include_ephem
+        If ``True`` (default), load MEC or definitive ephemeris and populate
+        ``POS_gsm`` and ``VEL_gsm``.  Magnetopause analyses that require VN and
+        DN should leave this enabled because the geometric calculations depend
+        critically on accurate positions and velocities.
+
+    download_only
+        When ``True``, pySPEDAS is called with ``notplot=True`` (or equivalent)
+        and only the CDF files are downloaded; the function then returns an
+        ``evt`` dict containing empty per-probe dicts and a fully populated
+        ``__meta__`` block describing what would have been loaded.
+
+    Returns
+    -------
+    event : dict
+        Nested mapping ``event[probe][var] -> (time, data)`` plus a global
+        ``event['__meta__']`` entry.  Time arrays are typically 1-D float64
+        epoch seconds (as returned by :func:`pyspedas.get_data`), while the
+        data arrays are NumPy ndarrays suitable for direct use with the rest of
+        the :mod:`mms_mp` toolkit (boundary detection, LMN construction,
+        normal-velocity blending, DN integration, and visualization).
+
+    Notes
+    -----
+    - This loader is intentionally opinionated but *non-destructive*: it does
+      not apply any science masks or filtering beyond basic NaN checks.
+      Quality control is delegated to :mod:`mms_mp.quality` and downstream
+      analysis functions.
+    - Reconstruction from neighbour probes is used sparingly (for example for
+      missing ``N_tot`` or ``V_i_gse`` on one probe) and always annotated in
+      the ``sources`` and ``warnings`` metadata for full provenance.
+    - For the canonical 2019-01-27 12:15–12:55 UT magnetopause crossing, this
+      function is the first step in building the LMN, BN, VN, and DN chains
+      used throughout the examples and diagnostics.
     """
 
     start_ns, end_ns = _parse_trange(trange)

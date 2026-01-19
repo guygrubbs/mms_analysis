@@ -30,24 +30,24 @@ PROBES = ('1','2','3','4')
 # We will use LMN from .sav when available (no comparison shown on plots)
 try:
     from tools.idl_sav_import import load_idl_sav
-    _SAV = load_idl_sav('references/IDL_Code/mp_lmn_systems_20190127_1215_1255_mp_ver2.sav')
+    _SAV = load_idl_sav('references/IDL_Code/mp_lmn_systems_20190127_1215-1255_mp-ver3b.sav')
     _LMN_PER_PROBE = _SAV.get('lmn', {})
 except Exception:
     _LMN_PER_PROBE = {}
 
 
 def _load_event():
-	    # HPCA is not required for these magnetic-only figures; disable it to
-	    # avoid failing when He+ moments are unavailable or cannot be
-	    # reconstructed for this interval.
-	    return mp.load_event(
-	        list(TRANGE),
-	        probes=list(PROBES),
-	        include_ephem=True,
-	        include_hpca=False,
-	        data_rate_fgm='srvy',
-	        data_rate_fpi='fast',
-	    )
+    # HPCA is not required for these magnetic-only figures; disable it to
+    # avoid failing when He+ moments are unavailable or cannot be
+    # reconstructed for this interval.
+    return mp.load_event(
+        list(TRANGE),
+        probes=list(PROBES),
+        include_ephem=True,
+        include_hpca=False,
+        data_rate_fgm='srvy',
+        data_rate_fpi='fast',
+    )
 
 
 def _rotate_B_to_LMN(B_df: pd.DataFrame,

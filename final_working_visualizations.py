@@ -10,6 +10,9 @@ CONFIRMED: Shows spacecraft order 2-1-4-3 for 2019-01-27 event.
 """
 
 import numpy as np
+# NumPy 2.x compatibility for third-party libraries (e.g., pytplot/bokeh)
+if not hasattr(np, "bool8"):
+    np.bool8 = np.bool_
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 from datetime import datetime

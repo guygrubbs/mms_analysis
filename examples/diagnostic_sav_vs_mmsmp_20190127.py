@@ -33,7 +33,7 @@ if _spec and _spec.loader:
 else:  # fallback
     raise RuntimeError('Unable to import examples/analyze_20190127_dn_shear.py')
 
-sav = load_idl_sav('mp_lmn_systems_20190127_1215-1255_mp-ver2b.sav')
+sav = load_idl_sav('mp_lmn_systems_20190127_1215-1255_mp-ver3b.sav')
 LMN = sav.get('lmn', {})
 B_LMN = sav.get('b_lmn', {})
 
@@ -549,7 +549,7 @@ lines = [
     '# Diagnostic Comparison (.sav vs mms_mp): 2019-01-27 12:15–12:55',
     '',
     '- Strict local caching: all inputs loaded from local CDFs only (no re-downloads).',
-    '- DN integration uses the same cold-ion windowing as published all_1243 outputs.',
+    '- DN integration for the comparison uses the same cold-ion windowing as the originally published all_1243 outputs; canonical publication results in this repository use the mixed_1230_1243 (mp-ver3b) LMN set.',
     '',
 ]
 if rows_bn:

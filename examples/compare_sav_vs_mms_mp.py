@@ -112,5 +112,5 @@ def run_comparison(sav_path: str,
 
 
 if __name__ == '__main__':
-    run_comparison('references/IDL_Code/mp_lmn_systems_20190127_1215_1255_mp_ver2.sav')
+    run_comparison('references/IDL_Code/mp_lmn_systems_20190127_1215-1255_mp-ver3b.sav')
 

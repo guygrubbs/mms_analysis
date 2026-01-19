@@ -1,9 +1,14 @@
 """
 Comprehensive MMS Event Analysis: 2019-01-27 12:30:50 UT
-2-hour window (±1 hour) with full tool suite and LMN coordinate tracking
+Focused 40-minute window (12:15–12:55 UT) with full tool suite and LMN tracking
 """
 
 import numpy as np
+# NumPy 2.x compatibility for third-party libraries (e.g., bokeh via pytplot)
+if not hasattr(np, "bool8"):
+    # Alias removed np.bool8 to the canonical bool_ type
+    np.bool8 = np.bool_
+
 import matplotlib
 matplotlib.use('Agg')  # Use non-interactive backend
 import matplotlib.pyplot as plt
@@ -141,34 +146,37 @@ def main():
     """Main comprehensive analysis function"""
 
     print("COMPREHENSIVE MMS EVENT ANALYSIS: 2019-01-27 12:30:50 UT")
-    print("2-Hour Window (±1 hour) with Full Tool Suite")
+    print("Focused 40-minute window (12:15–12:55 UT) with full tool suite")
     print("=" * 80)
     print(f"Started: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
-    # Define 2-hour time range: ±1 hour around the event
+    # Define focused time range matching the published 2019-01-27 event window
     event_time = '2019-01-27/12:30:50'
     event_dt = datetime(2019, 1, 27, 12, 30, 50)
     trange = [
-        (event_dt - timedelta(hours=1)).strftime('%Y-%m-%d/%H:%M:%S'),
-        (event_dt + timedelta(hours=1)).strftime('%Y-%m-%d/%H:%M:%S')
+        '2019-01-27/12:15:00',
+        '2019-01-27/12:55:00',
     ]
     probes = ['1', '2', '3', '4']
 
     print(f"\n📡 Loading MMS data for comprehensive analysis...")
     print(f"   Event time: {event_time}")
     print(f"   Time range: {trange[0]} to {trange[1]}")
-    print(f"   Window: 2 hours (±1 hour around event)")
+    print(f"   Window: 40 minutes (12:15:00–12:55:00 UT)")
     print(f"   Spacecraft: MMS1, MMS2, MMS3, MMS4")
 
     try:
-        # Load comprehensive MMS data
+        # Load comprehensive MMS data. For the canonical 2019-01-27 event the
+        # magnetic field is provided in survey cadence, so we explicitly
+        # request ``data_rate_fgm='srvy'`` to ensure ``B_gsm`` is available.
         evt = data_loader.load_event(
             trange=trange,
             probes=probes,
-            data_rate_fgm='fast',      # Fast mode for 2-hour window
+            data_rate_fgm='srvy',      # Survey FGM (canonical event cadence)
             data_rate_fpi='fast',      # Fast mode FPI
-            data_rate_hpca='fast',     # Fast mode HPCA
+            data_rate_hpca='fast',     # Fast mode HPCA (disabled via include_hpca)
             include_brst=True,         # Include burst mode if available
+            include_hpca=False,        # HPCA unavailable for this event window
             include_ephem=True         # Include spacecraft ephemeris
         )
 
@@ -186,12 +194,19 @@ def main():
         try:
             with open(idx, 'w', encoding='utf-8') as f:
                 f.write("<html><head><meta charset='utf-8'><title>Comprehensive Visuals</title></head><body>")
-                f.write(f"<h2>Comprehensive Visuals — {event_dt:%Y-%m-%d %H:%M} UT ±60 min</h2><ul>")
-                for pr in ['1','2','3','4']:
+                f.write(
+                    f"<h2>Comprehensive Visuals — {event_dt:%Y-%m-%d %H:%M} UT "
+                    "(12:15–12:55 UT window)</h2><ul>"
+                )
+                for pr in ['1', '2', '3', '4']:
                     html_name = f"mms{pr}_summary_{ts}.html"
-                    png_name  = f"mms{pr}_summary_{ts}.png"
-                    csv_name  = f"mms{pr}_summary_{ts}.csv"
-                    f.write(f"<li>MMS{pr}: <a href='{html_name}'>HTML</a> | <a href='{png_name}'>PNG</a> | <a href='{csv_name}'>CSV</a></li>")
+                    png_name = f"mms{pr}_summary_{ts}.png"
+                    csv_name = f"mms{pr}_summary_{ts}.csv"
+                    f.write(
+                        f"<li>MMS{pr}: <a href='{html_name}'>HTML</a> | "
+                        f"<a href='{png_name}'>PNG</a> | "
+                        f"<a href='{csv_name}'>CSV</a></li>"
+                    )
                 f.write("</ul></body></html>")
         except Exception:
             pass
@@ -201,7 +216,7 @@ def main():
         # Create all visualizations
         create_comprehensive_visualizations(results, event_dt, trange)
         # Also produce inspectable per‑probe quick‑looks with spectrograms
-        save_inspectable_visuals(evt, event_dt, minutes=120)
+        save_inspectable_visuals(evt, event_dt, minutes=40)
 
         # Generate detailed report
         generate_analysis_report(results, event_dt)
@@ -621,10 +636,10 @@ def create_comprehensive_visualizations(results, event_dt, trange):
     print("=" * 50)
 
     # 1. Multi-spacecraft overview plot
-    create_multispacecraft_overview(results, event_dt)
+    create_multispacecraft_overview(results, event_dt, trange)
 
     # 2. LMN coordinate evolution plots
-    create_lmn_evolution_plots(results, event_dt)
+    create_lmn_evolution_plots(results, event_dt, trange)
 
     # 3. Boundary crossing correlation plot
     create_boundary_correlation_plot(results, event_dt)
@@ -633,9 +648,9 @@ def create_comprehensive_visualizations(results, event_dt, trange):
     create_formation_analysis_plot(results, event_dt)
 
     # 5. Event timeline plot
-    create_event_timeline_plot(results, event_dt)
+    create_event_timeline_plot(results, event_dt, trange)
 
-def create_multispacecraft_overview(results, event_dt):
+def create_multispacecraft_overview(results, event_dt, trange):
     """Create multi-spacecraft overview plot"""
 
     print(f"   📈 Creating multi-spacecraft overview...")
@@ -645,6 +660,19 @@ def create_multispacecraft_overview(results, event_dt):
                  fontsize=16, fontweight='bold')
 
     colors = {'1': 'blue', '2': 'green', '3': 'red', '4': 'orange'}
+
+    # Determine time window for all time-series plots to avoid overly broad axes
+    if trange is not None and len(trange) == 2:
+        try:
+            t_start = pd.to_datetime(trange[0]).to_pydatetime()
+            t_end = pd.to_datetime(trange[1]).to_pydatetime()
+        except Exception:
+            # Fallback to a symmetric window around the event time
+            t_start = event_dt - timedelta(minutes=20)
+            t_end = event_dt + timedelta(minutes=20)
+    else:
+        t_start = event_dt - timedelta(minutes=20)
+        t_end = event_dt + timedelta(minutes=20)
 
     # Plot magnetic field magnitude for all spacecraft
     for probe in ['1', '2', '3', '4']:
@@ -743,8 +771,9 @@ def create_multispacecraft_overview(results, event_dt):
     axes[3].set_title('Event Crossings')
     axes[3].set_xlabel('Time (UT)')
 
-    # Format x-axis
+    # Format x-axis and explicitly limit to the event window
     for ax in axes:
+        ax.set_xlim(t_start, t_end)
         ax.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
         ax.xaxis.set_major_locator(mdates.MinuteLocator(interval=15))
         plt.setp(ax.xaxis.get_majorticklabels(), rotation=45)
@@ -756,7 +785,7 @@ def create_multispacecraft_overview(results, event_dt):
     print(f"      ✅ Multi-spacecraft overview saved: {filename}")
     plt.close()
 
-def create_lmn_evolution_plots(results, event_dt):
+def create_lmn_evolution_plots(results, event_dt, trange):
     """Create LMN coordinate evolution plots"""
 
     print(f"   🧭 Creating LMN coordinate evolution plots...")
@@ -766,6 +795,18 @@ def create_lmn_evolution_plots(results, event_dt):
                  fontsize=16, fontweight='bold')
 
     colors = {'1': 'blue', '2': 'green', '3': 'red', '4': 'orange'}
+
+    # Determine time window for position time series (left column)
+    if trange is not None and len(trange) == 2:
+        try:
+            t_start = pd.to_datetime(trange[0]).to_pydatetime()
+            t_end = pd.to_datetime(trange[1]).to_pydatetime()
+        except Exception:
+            t_start = event_dt - timedelta(minutes=20)
+            t_end = event_dt + timedelta(minutes=20)
+    else:
+        t_start = event_dt - timedelta(minutes=20)
+        t_end = event_dt + timedelta(minutes=20)
 
     # Plot LMN positions over time
     for i, coord in enumerate(['L', 'M', 'N']):
@@ -789,6 +830,9 @@ def create_lmn_evolution_plots(results, event_dt):
         axes[i, 0].legend(ncol=4)
         axes[i, 0].grid(True, alpha=0.3)
         axes[i, 0].set_title(f'{coord} Coordinate Evolution')
+
+        # Limit time axis for position evolution to the analysis window
+        axes[i, 0].set_xlim(t_start, t_end)
 
         # Plot event crossings in LMN coordinates
         for probe in ['1', '2', '3', '4']:
@@ -976,7 +1020,7 @@ def create_formation_analysis_plot(results, event_dt):
     print(f"      ✅ Formation analysis plot saved: {filename}")
     plt.close()
 
-def create_event_timeline_plot(results, event_dt):
+def create_event_timeline_plot(results, event_dt, trange):
     """Create event timeline plot"""
 
     print(f"   📅 Creating event timeline plot...")
@@ -984,6 +1028,18 @@ def create_event_timeline_plot(results, event_dt):
     fig, ax = plt.subplots(1, 1, figsize=(16, 8))
 
     colors = {'1': 'blue', '2': 'green', '3': 'red', '4': 'orange'}
+
+    # Determine time window for the timeline plot
+    if trange is not None and len(trange) == 2:
+        try:
+            t_start = pd.to_datetime(trange[0]).to_pydatetime()
+            t_end = pd.to_datetime(trange[1]).to_pydatetime()
+        except Exception:
+            t_start = event_dt - timedelta(minutes=20)
+            t_end = event_dt + timedelta(minutes=20)
+    else:
+        t_start = event_dt - timedelta(minutes=20)
+        t_end = event_dt + timedelta(minutes=20)
 
     # Plot all boundary crossings
     for probe in ['1', '2', '3', '4']:
@@ -1009,8 +1065,11 @@ def create_event_timeline_plot(results, event_dt):
     for probe in ['1', '2', '3', '4']:
         probe_num = int(probe)
         ax.axhline(probe_num, color=colors[probe], alpha=0.3, linewidth=1)
-        ax.text(event_dt - timedelta(minutes=50), probe_num, f'MMS{probe}',
-               color=colors[probe], fontweight='bold', va='center')
+
+        # Place labels just inside the left edge of the visible window
+        label_x = t_start + timedelta(minutes=2)
+        ax.text(label_x, probe_num, f'MMS{probe}',
+                color=colors[probe], fontweight='bold', va='center')
 
     ax.set_ylim(0.5, 4.5)
     ax.set_yticks([1, 2, 3, 4])
@@ -1020,7 +1079,8 @@ def create_event_timeline_plot(results, event_dt):
     ax.grid(True, alpha=0.3)
     ax.legend()
 
-    # Format x-axis
+    # Constrain x-axis to the event window and format ticks
+    ax.set_xlim(t_start, t_end)
     ax.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
     ax.xaxis.set_major_locator(mdates.MinuteLocator(interval=10))
     plt.setp(ax.xaxis.get_majorticklabels(), rotation=45)
@@ -1043,7 +1103,8 @@ def generate_analysis_report(results, event_dt):
 
     report_filename = f'MMS_Comprehensive_Analysis_Report_{event_dt.strftime("%Y%m%d_%H%M%S")}.md'
 
-    with open(report_filename, 'w') as f:
+    # Use UTF-8 so that superscripts (e.g., cm⁻³) and other Unicode glyphs are preserved
+    with open(report_filename, 'w', encoding='utf-8') as f:
         f.write(f"# MMS Comprehensive Event Analysis Report\n\n")
         f.write(f"**Event Time:** {event_dt.strftime('%Y-%m-%d %H:%M:%S')} UT\n")
         f.write(f"**Analysis Window:** ±1 hour (2-hour total)\n")
@@ -1120,12 +1181,21 @@ def generate_analysis_report(results, event_dt):
 
         # Generated files
         f.write("## Generated Visualizations\n\n")
-        f.write("The following visualization files were generated:\n\n")
-        f.write(f"1. `mms_multispacecraft_overview_{event_dt.strftime('%Y%m%d_%H%M%S')}.png` - Multi-spacecraft overview\n")
-        f.write(f"2. `mms_lmn_evolution_{event_dt.strftime('%Y%m%d_%H%M%S')}.png` - LMN coordinate evolution\n")
-        f.write(f"3. `mms_boundary_correlations_{event_dt.strftime('%Y%m%d_%H%M%S')}.png` - Boundary crossing correlations\n")
-        f.write(f"4. `mms_formation_analysis_{event_dt.strftime('%Y%m%d_%H%M%S')}.png` - Formation analysis\n")
-        f.write(f"5. `mms_event_timeline_{event_dt.strftime('%Y%m%d_%H%M%S')}.png` - Event timeline\n\n")
+        f.write("The following visualization files were generated (where available):\n\n")
+
+        ts = event_dt.strftime('%Y%m%d_%H%M%S')
+        f.write(f"1. `mms_multispacecraft_overview_{ts}.png` - Multi-spacecraft overview\n")
+        f.write(f"2. `mms_lmn_evolution_{ts}.png` - LMN coordinate evolution\n")
+        f.write(f"3. `mms_boundary_correlations_{ts}.png` - Boundary crossing correlations\n")
+
+        formation = results.get('formation_analysis', {}) or {}
+        if 'positions' in formation:
+            f.write(f"4. `mms_formation_analysis_{ts}.png` - Formation analysis\n")
+        else:
+            f.write("4. Formation analysis plot not generated - insufficient or missing "
+                    "position data for this event.\n")
+
+        f.write(f"5. `mms_event_timeline_{ts}.png` - Event timeline\n\n")
 
         f.write("## Conclusions\n\n")
         f.write("This comprehensive analysis provides detailed insights into the magnetopause event using real MMS mission data. ")

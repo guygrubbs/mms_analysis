@@ -182,10 +182,58 @@ def detect_crossings_multi(
 
     The detector fuses He⁺ density, the He⁺ fraction, the magnitude and
     rotation rate of the normal magnetic-field component, and the total ion
-    density contrast to yield a three-state classification: magnetosheath,
-    boundary layer, and magnetosphere.  Each channel is smoothed and mapped to
-    a logistic response so small perturbations around the literature thresholds
-    do not trigger spurious toggles.
+    density contrast to yield a three-state classification:
+
+    - ``"sheath"`` (magnetosheath),
+    - ``"mp_layer"`` (boundary / current layer),
+    - ``"magnetosphere"``.
+
+    Each channel is smoothed and mapped to a logistic response so that small
+    perturbations around the literature thresholds do not trigger spurious
+    toggles.  This mirrors the behaviour of the 2019-01-27 IDL-based
+    classifier but is implemented in a fully transparent, Pythonic way.
+
+    Parameters
+    ----------
+    t
+        Time axis, convertible to seconds via :func:`numpy.asarray`.  May be a
+        ``datetime64`` array, floats in seconds, or similar.
+
+    he
+        He⁺ number density (cm⁻³), typically from HPCA omni moments.
+
+    BN
+        Normal component of the magnetic field (nT) in the chosen LMN frame.
+
+    ni
+        Optional total ion density (cm⁻³), usually FPI-DIS ``N_tot``.  When
+        provided, the He⁺ fraction (He⁺/N_tot) is used as an additional
+        discriminator between magnetosphere and sheath.
+
+    cfg
+        :class:`DetectorCfg` instance controlling thresholds and smoothing
+        scales.  Defaults are tuned to the 2019-01-27 event but are broadly
+        applicable to similar magnetopause crossings.
+
+    good_mask
+        Optional boolean array marking samples that should be considered in
+        the classification.  NaNs in ``he``, ``BN`` or ``ni`` are excluded
+        automatically regardless of this mask.
+
+    Returns
+    -------
+    intervals : list of (state, i_start, i_end)
+        A list of contiguous index intervals labelled with one of
+        ``"sheath"``, ``"mp_layer"``, or ``"magnetosphere"``.  Indices refer to
+        the original ``t``/``he`` arrays.
+
+    Notes
+    -----
+    - The classification is performed in index space and does not enforce any
+      absolute duration thresholds beyond those encoded in :class:`DetectorCfg`.
+    - Results are typically visualised alongside BN, density, and He⁺ series
+      to verify that identified layers match the expected magnetopause
+      structure.
     """
 
     t_arr = np.asarray(t)

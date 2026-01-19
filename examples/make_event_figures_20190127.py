@@ -401,7 +401,6 @@ def _spectrograms(evt, out_dir: pathlib.Path):
                     log10=True,
                     ylabel="E$_i$ (eV)",
                     title="Ion energy flux",
-                    trange=TRANGE,
                 )
                 fig.savefig(out_dir / f"mms{p}_DIS_omni.png", dpi=220)
                 plt.close(fig)
@@ -418,7 +417,6 @@ def _spectrograms(evt, out_dir: pathlib.Path):
                         log10=True,
                         ylabel="E$_e$ (eV)",
                         title="Electron energy flux",
-                        trange=TRANGE,
                     )
                     fig.savefig(out_dir / f"mms{p}_DES_omni.png", dpi=220)
                     plt.close(fig)
@@ -431,12 +429,72 @@ def _spectrograms(evt, out_dir: pathlib.Path):
         )
         from pyspedas import get_data
 
+        def _extract_energy_axis(energy_tuple, omni_array):
+            """Return a 1-D energy axis compatible with *omni_array*.
+
+            Handles older and newer pyspedas.get_data return conventions where the
+            energy variable may be 1-D or multi-dimensional and may appear in
+            different tuple positions.
+            """
+
+            omni_ne = None
+            if omni_array is not None:
+                omni_arr = np.asarray(omni_array)
+                if omni_arr.ndim >= 2:
+                    omni_ne = omni_arr.shape[1]
+
+            if not isinstance(energy_tuple, tuple):
+                return None
+
+            # Collect numpy-like candidates from the tuple
+            candidates = [
+                np.asarray(item)
+                for item in energy_tuple
+                if hasattr(item, "shape")
+            ]
+            if not candidates:
+                return None
+
+            # 1) Prefer 1-D arrays, ideally matching omni's energy length
+            for arr in candidates:
+                if arr.ndim == 1 and arr.size > 4:
+                    if omni_ne is None or arr.size == omni_ne:
+                        return arr
+
+            # 2) If only higher-dimensional arrays exist, pick an axis that
+            #    matches omni's energy dimension, assuming layout like (Nt, Ne).
+            for arr in candidates:
+                if arr.ndim >= 2:
+                    for axis, size in enumerate(arr.shape):
+                        if omni_ne is not None and size == omni_ne and size > 4:
+                            index = [0] * arr.ndim
+                            index[axis] = slice(None)
+                            e1d = np.asarray(arr[tuple(index)]).reshape(-1)
+                            return e1d
+
+            # 3) Fallback - flatten the first candidate
+            flat = candidates[0].reshape(-1)
+            return flat if flat.size > 4 else None
+
         for p in PROBES:
             # DIS
             dis = info[p]["dis"]
             if dis["omni_var"] and dis["energy_var"]:
-                t, omni = get_data(dis["omni_var"])
-                _, e = get_data(dis["energy_var"])
+                dis_omni = get_data(dis["omni_var"])
+                dis_energy = get_data(dis["energy_var"])
+                t = omni = e = None
+                if isinstance(dis_omni, tuple) and len(dis_omni) >= 2:
+                    # pyspedas.get_data may return (t, data) or (t, data, v).
+                    t = dis_omni[0]
+                    omni = dis_omni[1]
+                    # Some newer versions also provide the energy axis as the
+                    # third element for spectrogram variables.
+                    if len(dis_omni) >= 3:
+                        cand = np.asarray(dis_omni[2])
+                        if cand.ndim == 1 and cand.size > 4:
+                            e = cand
+                if e is None:
+                    e = _extract_energy_axis(dis_energy, omni)
                 if (
                     t is not None
                     and omni is not None
@@ -450,7 +508,6 @@ def _spectrograms(evt, out_dir: pathlib.Path):
                         log10=True,
                         ylabel="E$_i$ (eV)",
                         title="Ion energy flux",
-                        trange=TRANGE,
                     )
                     fig.savefig(out_dir / f"mms{p}_DIS_omni.png", dpi=220)
                     plt.close(fig)
@@ -458,8 +515,18 @@ def _spectrograms(evt, out_dir: pathlib.Path):
             # DES
             des = info[p]["des"]
             if des["omni_var"] and des["energy_var"]:
-                t, omni = get_data(des["omni_var"])
-                _, e = get_data(des["energy_var"])
+                des_omni = get_data(des["omni_var"])
+                des_energy = get_data(des["energy_var"])
+                t = omni = e = None
+                if isinstance(des_omni, tuple) and len(des_omni) >= 2:
+                    t = des_omni[0]
+                    omni = des_omni[1]
+                    if len(des_omni) >= 3:
+                        cand = np.asarray(des_omni[2])
+                        if cand.ndim == 1 and cand.size > 4:
+                            e = cand
+                if e is None:
+                    e = _extract_energy_axis(des_energy, omni)
                 if (
                     t is not None
                     and omni is not None
@@ -473,7 +540,6 @@ def _spectrograms(evt, out_dir: pathlib.Path):
                         log10=True,
                         ylabel="E$_e$ (eV)",
                         title="Electron energy flux",
-                        trange=TRANGE,
                     )
                     fig.savefig(out_dir / f"mms{p}_DES_omni.png", dpi=220)
                     plt.close(fig)

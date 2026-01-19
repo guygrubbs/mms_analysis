@@ -362,13 +362,31 @@ def shear_and_xline(evt,lmn_map,BN,label):
     shear_df=pd.DataFrame(rows)
     # Plot shear evolution
     if not shear_df.empty:
-        fig,ax=plt.subplots(figsize=(10,5))
-        for p in PROBES:
-            d=shear_df[shear_df.probe==p]
-            if d.empty: continue
-            ax.plot(pd.to_datetime(d['time_utc']), d['shear_deg'], marker='o', label=f'MMS{p}')
-        ax.set_ylabel('Magnetic shear (deg)'); ax.set_title(f'Shear angles at key times ({label})'); ax.grid(True,alpha=0.3); ax.legend(frameon=False)
-        fig.autofmt_xdate(); fig.tight_layout(); fig.savefig(EVENT_DIR/f'shear_angles_{label}.png',dpi=220); plt.close(fig)
+	        fig,ax=plt.subplots(figsize=(10,5))
+	        all_t = []
+	        for p in PROBES:
+	            d=shear_df[shear_df.probe==p]
+	            if d.empty:
+	                continue
+	            t = pd.to_datetime(d['time_utc'])
+	            all_t.append(t)
+	            ax.plot(t, d['shear_deg'], marker='o', label=f'MMS{p}')
+	        # Explicitly restrict the x-axis to the shear-evaluation times (with
+	        # a small padding) so the plot does not span the full mission window
+	        # when the underlying event data cover multiple years.
+	        if all_t:
+	            t_concat = pd.concat(all_t)
+	            t_min, t_max = t_concat.min(), t_concat.max()
+	            pad = pd.Timedelta(minutes=2)
+	            ax.set_xlim(t_min - pad, t_max + pad)
+	        ax.set_ylabel('Magnetic shear (deg)')
+	        ax.set_title(f'Shear angles at key times ({label})')
+	        ax.grid(True,alpha=0.3)
+	        ax.legend(frameon=False)
+	        fig.autofmt_xdate()
+	        fig.tight_layout()
+	        fig.savefig(EVENT_DIR/f'shear_angles_{label}.png',dpi=220)
+	        plt.close(fig)
     # 3D formation vs X-line (use mean M as X-line)
     fig=plt.figure(figsize=(6,5)); ax=fig.add_subplot(111,projection='3d')
     t0=pd.to_datetime('2019-01-27/12:45:00',utc=True)

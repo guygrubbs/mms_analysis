@@ -29,7 +29,7 @@ OUT = EVENT_DIR / "diagnostics"
 OUT.mkdir(parents=True, exist_ok=True)
 TRANGE = evmod.TRANGE
 PROBES = evmod.PROBES
-SAV_PATH = ROOT / evmod.SAVS["all_1243"]
+SAV_PATH = ROOT / evmod.SAVS["mixed_1230_1243"]
 
 
 def _angle_deg(a: np.ndarray, b: np.ndarray) -> float:

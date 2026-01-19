@@ -35,7 +35,7 @@ PROBES = ('1','2','3','4')
 def _load_evt_and_lmn():
     evt = mp.load_event(list(TRANGE), probes=list(PROBES), include_ephem=True,
                         data_rate_fgm='srvy', data_rate_fpi='fast')
-    sav = load_idl_sav('references/IDL_Code/mp_lmn_systems_20190127_1215_1255_mp_ver2.sav')
+    sav = load_idl_sav('references/IDL_Code/mp_lmn_systems_20190127_1215-1255_mp-ver3b.sav')
     vn_sav = extract_vn_series(sav)
     lmn = sav.get('lmn', {})
     return evt, lmn, vn_sav
